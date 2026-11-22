@@ -5,37 +5,57 @@
   --card: var(--tg-theme-secondary-bg-color, #1a1d24);
   --accent: var(--tg-theme-button-color, #6c5ce7);
   --accent-fg: var(--tg-theme-button-text-color, #fff);
+  --line: #2a2d35;
   --win: #2ecc71;
   --lose: #e74c3c;
 }
 * { box-sizing: border-box; }
-body { margin: 0; font: 15px/1.4 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+body { margin: 0 auto; max-width: 520px; font: 15px/1.4 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--fg); }
 header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; }
 .logo { font-weight: 700; font-size: 18px; }
-.balance { background: var(--card); padding: 6px 12px; border-radius: 999px; font-weight: 600; }
-nav { display: flex; gap: 4px; padding: 0 12px; }
-nav button { flex: 1; background: none; border: 0; color: var(--muted); padding: 10px 0; border-bottom: 2px solid transparent; }
+.balance { background: var(--card); padding: 6px 12px; border-radius: 999px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.demo-banner { background: #3a2f00; color: #ffd54a; font-size: 13px; padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.demo-banner[hidden] { display: none; }
+nav { display: flex; gap: 4px; padding: 0 12px; position: sticky; top: 0; background: var(--bg); z-index: 2; }
+nav button { flex: 1; background: none; border: 0; color: var(--muted); padding: 10px 0; border-bottom: 2px solid transparent; border-radius: 0; }
 nav button.active { color: var(--fg); border-color: var(--accent); }
 main { padding: 12px 16px 80px; }
+h3 { margin: 20px 0 8px; font-size: 16px; }
 .tab { display: none; } .tab.active { display: block; }
-.game { display: none; background: var(--card); padding: 12px; border-radius: 12px; margin: 12px 0; }
-.game.active { display: block; }
+.card { background: var(--card); padding: 12px; border-radius: 12px; margin: 10px 0; }
+.game { display: none; } .game.active { display: block; }
 .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
-.row label { width: 110px; color: var(--muted); }
-input, select { flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid #333; border-radius: 8px; padding: 8px; font-size: 15px; }
-button { background: var(--card); color: var(--fg); border: 1px solid #333; border-radius: 8px; padding: 10px 14px; font-size: 15px; }
+.row label { width: 120px; flex-shrink: 0; color: var(--muted); }
+input, select { flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid #333; border-radius: 8px; padding: 9px; font-size: 15px; }
+button { background: var(--card); color: var(--fg); border: 1px solid #333; border-radius: 8px; padding: 10px 14px; font-size: 15px; cursor: pointer; }
 button.primary { background: var(--accent); color: var(--accent-fg); border: 0; width: 100%; font-weight: 600; }
-button:disabled { opacity: .5; }
+button.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; font-size: 13px; }
+button:disabled { opacity: .45; cursor: default; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.chips button.active { background: var(--accent); color: var(--accent-fg); }
-.result { min-height: 48px; text-align: center; font-size: 20px; font-weight: 700; margin-top: 12px; }
+.chips button.active { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+.small-chips button { flex: 1; padding: 6px; font-size: 13px; }
+.hint { color: var(--muted); font-size: 13px; margin: 6px 0 10px; }
+.result { min-height: 56px; text-align: center; font-size: 20px; font-weight: 700; margin-top: 12px; }
+.result .sub { display: block; font-size: 14px; font-weight: 400; color: var(--muted); }
 .win { color: var(--win); } .lose { color: var(--lose); }
-.grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 8px 0; }
-.grid button { aspect-ratio: 1; padding: 0; font-size: 20px; }
-.grid button.safe { background: #1e5631; } .grid button.mine { background: #6b1f1f; }
+.grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 8px auto; max-width: 290px; }
+.grid button { aspect-ratio: 1; padding: 0; font-size: 22px; }
+.grid button:disabled { opacity: .85; }
+.grid button.safe { background: #1e5631; } .grid button.mine { background: #6b1f1f; } .grid button.boom { background: #c0392b; }
+.buckets { display: flex; gap: 2px; margin: 10px 0; }
+.buckets span { flex: 1; text-align: center; font-size: 10px; padding: 6px 0; border-radius: 4px; background: #2a2d35; overflow: hidden; }
+.buckets span.hot { background: #6b3a1f; } .buckets span.hit { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
 .list { list-style: none; padding: 0; margin: 0; }
-.list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2a2d35; font-size: 14px; }
-.kv { margin: 8px 0; } .kv code { display: block; word-break: break-all; color: var(--muted); }
-.muted { color: var(--muted); } .small { font-size: 13px; }
+.list li { display: flex; justify-content: space-between; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.list.clickable li { cursor: pointer; }
+.list .empty { color: var(--muted); justify-content: center; border: 0; }
+.kv { margin: 10px 0; } .kv code { display: block; word-break: break-all; color: var(--muted); font-size: 12px; }
+.muted { color: var(--muted); } .small { font-size: 12px; }
 pre { white-space: pre-wrap; word-break: break-all; }
-#toast { position: fixed; left: 16px; right: 16px; bottom: 16px; background: #000c; color: #fff; padding: 12px; border-radius: 10px; display: none; text-align: center; }
+.modal { position: fixed; inset: 0; background: #0009; display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+.modal[hidden] { display: none; }
+.sheet { background: var(--card); width: 100%; max-width: 520px; border-radius: 16px 16px 0 0; padding: 16px; max-height: 85vh; overflow: auto; }
+.sheet .big { font-size: 28px; font-weight: 700; text-align: center; margin: 8px 0; }
+.sheet pre, .sheet code { font-size: 12px; color: var(--muted); }
+.ok { color: var(--win); font-weight: 600; } .bad { color: var(--lose); font-weight: 600; }
+#toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 488px; margin: 0 auto; background: #000d; color: #fff; padding: 12px; border-radius: 10px; display: none; text-align: center; z-index: 20; pointer-events: none; }

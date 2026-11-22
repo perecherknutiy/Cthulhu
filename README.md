@@ -74,6 +74,15 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 ```
 С `DEBUG=true` доступен Swagger на `/docs`.
 
+### Фронтенд без бэкенда (демо-режим)
+Откройте `webapp/index.html` в браузере через любой локальный сервер (`python -m http.server` в папке `webapp`,
+затем `http://localhost:8000`). Без Telegram фронт включает демо-режим: `webapp/demo-api.js` отвечает
+вместо сервера в том же формате, что и настоящий API, и считает игры по тому же provably-fair алгоритму
+(на одинаковых сидах исходы совпадают с бэкендом). Баланс хранится в браузере, кнопка «Сбросить» — 1000 ⭐.
+
+Внутри Telegram (есть `initData`) фронт всегда ходит в настоящий API. Если демо в проде не нужно —
+удалите строку `<script src="demo-api.js"></script>` из `webapp/index.html`.
+
 ### Polling или webhook
 - `BOT_MODE=polling` — проще всего, для разработки и одного сервера.
 - `BOT_MODE=webhook` + `WEBHOOK_URL=https://domain/tg/webhook` + `WEBHOOK_SECRET` — для продакшна.
