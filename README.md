@@ -78,10 +78,29 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 Откройте `webapp/index.html` в браузере через любой локальный сервер (`python -m http.server` в папке `webapp`,
 затем `http://localhost:8000`). Без Telegram фронт включает демо-режим: `webapp/demo-api.js` отвечает
 вместо сервера в том же формате, что и настоящий API, и считает игры по тому же provably-fair алгоритму
-(на одинаковых сидах исходы совпадают с бэкендом). Баланс хранится в браузере, кнопка «Сбросить» — 1000 ⭐.
+(на одинаковых сидах исходы совпадают с бэкендом). Баланс хранится в браузере, «Настройки → Сбросить демо» — 1000 ⭐.
 
 Внутри Telegram (есть `initData`) фронт всегда ходит в настоящий API. Если демо в проде не нужно —
 удалите строку `<script src="demo-api.js"></script>` из `webapp/index.html`.
+
+Файлы фронта:
+- `index.html` — каркас: хедер, экран, футер; шрифты Golos Text и Yeseva One с Google Fonts.
+- `style.css` — две темы (День / Ночь) на палитре `#5dc165` / `#36703f`.
+- `app.js` — роутер и все экраны: Играть (карусели новостей, слотов, мини-игр), Чат, Меню (Профиль, Настройки, Помощь), кошелёк, игры.
+- `i18n.js` — строки интерфейса RU/EN. `content.js` — соглашение, политика, ответственная игра, FAQ, правила чата, новости.
+- `demo-api.js` — демо-бэкенд в браузере.
+
+Юридические тексты в `content.js` — шаблон: перед запуском их должен проверить юрист и вписать юрлицо оператора.
+
+#### Что новый фронт ждёт от бэкенда (пока есть только в демо)
+| Метод | Что нужно |
+|---|---|
+| `GET /api/me` | добавить `public_id` (внутренний ID), `telegram_id`, `nickname`, `photo_url`, `vip {level, key, cashback, wagered, current_min, next_min, next_key}`, `referral {link, invited, earned, percent}` |
+| `POST /api/me/nickname` `{nickname}` | выбор ника при первом входе и смена в профиле: 3–20 символов (буквы, цифры, пробел, `_ . -`), уникален без учёта регистра (`nickname_taken`), нельзя похожие на администрацию (`nickname_reserved`: содержит admin/support/moder/official/админ/поддерж/модер/официал или равен cthulhu/ктулху/telegram/system). Пока ник не выбран, `/api/me` отдаёт `nickname: null` — фронт показывает шаг выбора ника |
+| `GET /api/chat/messages?after_id&lang` | `{messages:[{id, kind:"user"\|"win", user:{public_id,nickname,vip_level,photo_url}, text, game, amount, created_at}], online, me:{public_id}}` |
+| `POST /api/chat/messages` `{text}` | до 300 символов, не чаще раза в 2 с, мут/бан модератором |
+| `POST /api/games/slots/play` `{amount, params:{slot}}` | слоты 3×3, 5 линий; алгоритм и таблица выплат — в `demo-api.js` (блок `slots`) |
+| `GET /api/config` | добавить `vip_levels` и игру `slots` с `themes`, `weights`, `pays`, `lines` |
 
 ### Polling или webhook
 - `BOT_MODE=polling` — проще всего, для разработки и одного сервера.

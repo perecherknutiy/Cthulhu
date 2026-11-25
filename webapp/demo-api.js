@@ -9,18 +9,47 @@
   const EDGE = 0.03;
   const RTP = 1 - EDGE;
   const LIMITS = { min_bet: 10, max_bet: 10000, max_payout: 500000 };
-  const STORE_KEY = "cthulhu-demo-v1";
+  const STORE_KEY = "cthulhu-demo-v3";
   const START_BALANCE = 1000;
+
+  // ------------------------------------------------------------ slots
+  // 3×3, 5 линий. Каждая клетка независимо выбирает символ по весам (из одного числа RNG).
+  // Выплата линии (3 одинаковых) — в ставках на линию; ставка на линию = ставка / 5.
+  // RTP = Σ p_i³ · pay_i — считается точно, таблица подгоняется под 1 − house_edge.
+  const SLOT_WEIGHTS = [32, 26, 20, 12, 7, 3];
+  const SLOT_BASE = [2, 4, 8, 30, 120, 600];
+  const SLOT_LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 4, 8], [6, 4, 2]];
+  const SLOT_PAYS = (() => {
+    const ev = SLOT_WEIGHTS.reduce((a, w, i) => a + (w / 100) ** 3 * SLOT_BASE[i], 0);
+    return SLOT_BASE.map((b) => Math.floor(b * (RTP / ev) * 100 + 1e-9) / 100);
+  })();
+  const SLOT_THEMES = {
+    cthulhu: { symbols: ["🐚", "🦀", "🐟", "🦑", "🐙", "👁️"] },
+    fruits: { symbols: ["🍒", "🍋", "🍊", "🍇", "🔔", "💎"] },
+    treasure: { symbols: ["⚓", "🧭", "🪙", "💰", "💎", "👑"] },
+  };
+
+  // привилегии по сумме ставок
+  const VIP_LEVELS = [
+    { level: 0, key: "novice", min: 0, cashback: 0 },
+    { level: 1, key: "cultist", min: 1000, cashback: 1 },
+    { level: 2, key: "priest", min: 10000, cashback: 2 },
+    { level: 3, key: "deep_one", min: 50000, cashback: 3 },
+    { level: 4, key: "old_one", min: 250000, cashback: 5 },
+  ];
 
   const CONFIG = {
     house_edge: EDGE, ...LIMITS,
     games: [
       { name: "dice", title: "Dice" },
-      { name: "coinflip", title: "Монетка" },
+      { name: "coinflip", title: "Coinflip" },
       { name: "limbo", title: "Limbo" },
       { name: "plinko", title: "Plinko", tables: PLINKO },
       { name: "mines", title: "Mines", tiles: 25 },
+      { name: "slots", title: "Slots", themes: Object.keys(SLOT_THEMES).map((id) => ({ id, ...SLOT_THEMES[id] })),
+        weights: SLOT_WEIGHTS, pays: SLOT_PAYS, lines: SLOT_LINES },
     ],
+    vip_levels: VIP_LEVELS,
     bot_username: "cthulhu_demo_bot",
     deposit: { min: 50, max: 10000, presets: [50, 100, 250, 500, 1000, 2500] },
     withdraw: { min: 100, max: 100000, method: "manual", wager_ratio: 1 },
@@ -131,6 +160,25 @@
         return { mult, result: { path, bucket, multiplier: mult } };
       },
     },
+    slots: {
+      parse(p) {
+        if (!SLOT_THEMES[p.slot]) fail("bad_params", "Неверный параметр slot");
+        return { slot: p.slot };
+      },
+      maxMult: () => null, // выигрыш режется лимитом max_payout при расчёте, ставку не отклоняем
+      capPayout: true,
+      play(rng, p) {
+        const cum = SLOT_WEIGHTS.map((_, i) => SLOT_WEIGHTS.slice(0, i + 1).reduce((a, b) => a + b, 0));
+        const grid = rng.floats(9).map((f) => cum.findIndex((c) => Math.floor(f * 100) < c));
+        const wins = [];
+        SLOT_LINES.forEach((line, i) => {
+          const [a, b, c] = line.map((k) => grid[k]);
+          if (a === b && b === c) wins.push({ line: i, symbol: a, pay: SLOT_PAYS[a] });
+        });
+        const mult = floorTo(wins.reduce((s, w) => s + w.pay, 0) / SLOT_LINES.length, 4);
+        return { mult, result: { slot: p.slot, grid, wins, multiplier: mult } };
+      },
+    },
   };
 
   const minesMultiplier = (mines, revealed) => {
@@ -161,10 +209,12 @@
 
   async function reset(persist = true) {
     S = {
-      user: { id: 777000, username: "demo", first_name: "Демо", balance: 0, total_deposited: 0, total_withdrawn: 0,
-              total_wagered: 0, total_won: 0 },
+      user: { id: 777000, public_id: 104233, username: "demo", first_name: "Демо", nickname: null, // ник выбирается при первом входе
+              photo_url: null, balance: 0, total_deposited: 0, total_withdrawn: 0, total_wagered: 0, total_won: 0,
+              referral_invited: 3, referral_earned: 0 },
       seed: await newSeed(), revealed: {}, txs: [], bets: [], withdrawals: [], invoices: {},
-      seq: { tx: 0, bet: 0, wd: 0 },
+      chat: { messages: [], lastBotAt: 0, lastUserAt: 0 },
+      seq: { tx: 0, bet: 0, wd: 0, msg: 0 },
     };
     apply("bonus", START_BALANCE, "demo", 0);
     if (persist) save();
@@ -234,10 +284,59 @@
     return Math.max(0, Math.floor(S.user.total_deposited * CONFIG.withdraw.wager_ratio) - S.user.total_wagered);
   }
 
-  function me() {
-    return { ...S.user, wager_left: wagerLeft(), referrals: 0,
-             referral_link: `https://t.me/${CONFIG.bot_username}?startapp=ref_${S.user.id}` };
+  function vipFor(wagered) {
+    let cur = VIP_LEVELS[0];
+    for (const l of VIP_LEVELS) if (wagered >= l.min) cur = l;
+    const next = VIP_LEVELS[cur.level + 1] || null;
+    return { level: cur.level, key: cur.key, cashback: cur.cashback, wagered, current_min: cur.min,
+             next_min: next ? next.min : null, next_key: next ? next.key : null };
   }
+
+  function me() {
+    const u = S.user;
+    return {
+      ...u, telegram_id: u.id, wager_left: wagerLeft(), vip: vipFor(u.total_wagered),
+      referral: { link: `https://t.me/${CONFIG.bot_username}?startapp=ref_${u.public_id}`,
+                  invited: u.referral_invited, earned: u.referral_earned, percent: CONFIG.referral_deposit_percent },
+    };
+  }
+
+  // ------------------------------------------------------------ chat (в демо остальные игроки — боты)
+  const BOT_NAMES = ["Dagon", "Rlyeh_walker", "Nyarla", "deep_one_42", "Azathoth", "Shoggoth_fan", "Innsmouth",
+                     "YogSothoth", "Hydra", "Elder_sign"];
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const GAME_NAMES = ["Dice", "Limbo", "Plinko", "Mines", "Slots"];
+
+  function botUser(name) {
+    const h = [...name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+    return { public_id: 100000 + (h % 90000), nickname: name, vip_level: h % 5, photo_url: null };
+  }
+
+  function pushMsg(m) {
+    S.chat.messages.push({ id: ++S.seq.msg, created_at: now(), ...m });
+    if (S.chat.messages.length > 100) S.chat.messages.splice(0, S.chat.messages.length - 100);
+  }
+
+  function tickChat(lang) {
+    const lines = (window.CONTENT?.[lang] || window.CONTENT?.ru)?.chatBots || ["hi"];
+    const c = S.chat;
+    if (!c.messages.length) { // стартовая история
+      for (let i = 0; i < 6; i++) pushMsg({ kind: "user", user: botUser(pick(BOT_NAMES)), text: pick(lines) });
+      c.lastBotAt = Date.now();
+    }
+    if (Date.now() - c.lastBotAt > 4000 + Math.random() * 6000) {
+      if (Math.random() < 0.25) {
+        pushMsg({ kind: "win", user: botUser(pick(BOT_NAMES)), game: pick(GAME_NAMES),
+                  amount: [120, 340, 560, 1200, 2500][Math.floor(Math.random() * 5)] });
+      } else {
+        pushMsg({ kind: "user", user: botUser(pick(BOT_NAMES)), text: pick(lines) });
+      }
+      c.lastBotAt = Date.now();
+    }
+  }
+
+  const myChatUser = () => ({ public_id: S.user.public_id, nickname: S.user.nickname,
+                              vip_level: vipFor(S.user.total_wagered).level, photo_url: S.user.photo_url });
 
   // имитация админа: заявка «одобряется» через 5 секунд
   function tickWithdrawals() {
@@ -257,6 +356,37 @@
 
     if (method === "GET" && p === "/api/config") return CONFIG;
     if (method === "GET" && p === "/api/me") { tickWithdrawals(); return me(); }
+    if (method === "POST" && p === "/api/me/nickname") {
+      const nick = String(body.nickname || "").trim().replace(/\s+/g, " ");
+      if (!/^[A-Za-zА-Яа-яЁё0-9_ .-]{3,20}$/.test(nick))
+        fail("bad_nickname", "Ник: 3–20 символов — буквы, цифры, пробел, _ . -");
+      const low = nick.toLowerCase().replace(/[\s_.-]/g, "");
+      // нельзя выдавать себя за администрацию (на бэкенде — тот же список)
+      const RESERVED_PARTS = ["admin", "support", "moder", "official", "админ", "поддерж", "модер", "официал"];
+      const RESERVED_EXACT = ["cthulhu", "ктулху", "telegram", "телеграм", "system", "система"];
+      if (RESERVED_PARTS.some((w) => low.includes(w)) || RESERVED_EXACT.includes(low))
+        fail("nickname_reserved", "Такой ник выбрать нельзя");
+      // занятые ники (в демо — ники ботов чата), сравнение без учёта регистра
+      if (BOT_NAMES.some((b) => b.toLowerCase() === nick.toLowerCase()) && nick !== S.user.nickname)
+        fail("nickname_taken", "Этот ник уже занят");
+      S.user.nickname = nick;
+      return me();
+    }
+    if (method === "GET" && p === "/api/chat/messages") {
+      tickChat(q.lang || "ru");
+      const after = +q.after_id || 0;
+      return { messages: S.chat.messages.filter((m) => m.id > after), online: 90 + (Math.floor(Date.now() / 60000) % 60),
+               me: { public_id: S.user.public_id } };
+    }
+    if (method === "POST" && p === "/api/chat/messages") {
+      const text = String(body.text || "").trim();
+      if (!text) fail("empty_message", "Пустое сообщение");
+      if (text.length > 300) fail("message_too_long", "Сообщение длиннее 300 символов");
+      if (Date.now() - S.chat.lastUserAt < 2000) fail("rate_limited", "Слишком часто, подождите секунду");
+      S.chat.lastUserAt = Date.now();
+      pushMsg({ kind: "user", user: myChatUser(), text });
+      return S.chat.messages[S.chat.messages.length - 1];
+    }
 
     if (method === "POST" && p === "/api/wallet/invoice") {
       const amount = body.amount;
@@ -343,13 +473,17 @@
       const game = GAMES[play[1]] || fail("not_found", "Игра не найдена");
       checkAmount(body.amount);
       const params = game.parse(body.params || {});
-      if (payoutFor(body.amount, game.maxMult(params)) > LIMITS.max_payout)
+      const maxMult = game.maxMult(params);
+      if (maxMult !== null && payoutFor(body.amount, maxMult) > LIMITS.max_payout)
         fail("max_payout", `Возможный выигрыш превышает лимит ${LIMITS.max_payout} ⭐`);
       const { seed, nonce, rng } = await takeBet(body.amount);
       const outcome = game.play(rng, params);
       const { chance, ...publicParams } = params;
       const bet = newBet(play[1], body.amount, publicParams, seed, nonce, { result: outcome.result });
-      settle(bet, outcome.mult);
+      settle(bet, outcome.mult, !!game.capPayout);
+      if (bet.payout >= 10 * bet.amount && bet.payout >= 500) // крупный выигрыш — в ленту чата
+        pushMsg({ kind: "win", user: myChatUser(), game: CONFIG.games.find((g) => g.name === play[1]).title,
+                  amount: bet.payout });
       return playOut(bet, outcome.result);
     }
 
