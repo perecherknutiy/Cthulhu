@@ -1,7 +1,7 @@
-# 🐙 Cthulhu — казино в Telegram Mini App на звёздах
+# 💎 ARA Casino — казино в Telegram Mini App на USDT
 
-Бэкенд-основа: бот + API мини-приложения + кошелёк в Telegram Stars (XTR) + честные (provably fair) игры + выводы + админка.
-Фронт в `webapp/` — минимальный, только чтобы руками прогнать все сценарии; заменяйте на свой.
+Бот + API мини-приложения + кошелёк в USDT (пополнение и вывод в сети TON через ваш собственный кошелёк) + 8 честных (provably fair) игр + админка + фронт.
+Рулетка, Crash, рейтинг, ежедневный бонус и иллюстрации перенесены из прототипа на Node + SQLite на этот бэкенд и фронт.
 
 **Стек:** Python 3.12, FastAPI, aiogram 3.33 (Bot API 10.x), SQLAlchemy 2 (async) + asyncpg, PostgreSQL, Alembic.
 Бот и API живут в одном процессе.
@@ -13,14 +13,16 @@
 | Модуль | Что делает |
 |---|---|
 | **Авторизация** | Проверка `initData` мини-аппа по HMAC (`app/telegram_auth.py`). Фронт шлёт `Authorization: tma <initData>`. |
-| **Кошелёк** | Баланс в целых звёздах, леджер транзакций (`transactions`): любая смена баланса = запись. Блокировка строки юзера (`SELECT … FOR UPDATE`) — параллельные ставки не уводят баланс в минус. |
-| **Пополнение** | `createInvoiceLink` в XTR → `WebApp.openInvoice` → `pre_checkout_query` (проверка счёта) → `successful_payment` (идемпотентно по `telegram_payment_charge_id`). Также `/deposit` в боте. |
-| **Возвраты** | `/refund <charge_id>` — `refundStarPayment` со списанием с баланса; событие `refunded_payment` от Telegram тоже обрабатывается. |
-| **Игры** | Dice, Монетка, Limbo, Plinko (8–16 рядов, 3 уровня риска), Mines (многошаговая). Преимущество казино настраивается (`HOUSE_EDGE`), RTP проверен тестами. |
+| **Кошелёк** | Баланс в USDT: внутри целые микро-USDT (1 USDT = 1 000 000, как у самого токена), леджер транзакций (`transactions`): любая смена баланса = запись. Блокировка строки юзера (`SELECT … FOR UPDATE`) — параллельные ставки не уводят баланс в минус. |
+| **Пополнение** | Игрок переводит USDT в сети TON на ваш кошелёк, в комментарии — свой ID из профиля. Сторож (`app/ton/watcher.py`) раз в 10 с читает транзакции кошелька в toncenter.com и зачисляет перевод. Каждый перевод учитывается один раз (по хэшу). Переводы без ID попадают в `/deposits`, админ зачисляет их `/credit`. |
+| **Игры** | Crash, Рулетка (европейская), Слоты 3×3 (3 темы, 5 линий), Mines, Dice, Монетка, Limbo, Plinko (8–16 рядов, 3 уровня риска). Преимущество казино настраивается (`HOUSE_EDGE`; в рулетке его задают правила — 1/37), RTP проверен тестами. |
+| **Профиль** | Внутренний ID игрока (`public_id`, с 100001) — его видно в профиле, рейтинге и реф-ссылке вместо Telegram ID. Ник 3–20 символов, уникален без учёта регистра. Уровни: Бронза → Серебро → Золото → Сапфир → Бриллиант по сумме ставок. |
+| **Рейтинг** | `GET /api/leaderboard?period=week\|all` — топ-20 по сумме ставок и место игрока. |
+| **Ежедневный бонус** | `DAILY_BONUS` USDT раз в сутки по UTC (по умолчанию выключен — это настоящие деньги). Бонус входит в отыгрыш перед выводом. |
 | **Provably fair** | `HMAC_SHA256(server_seed, "client_seed:nonce:cursor")`, хэш сида заранее, раскрытие при ротации, публичный `/api/fair/verify`. |
-| **Вывод** | Заявка → баланс сразу списывается → админ в боте жмёт «Выплатить»/«Отклонить». Способы: `manual` и `gifts` (бот шлёт подарки через `sendGift`). Требование отыгрыша депозита. |
-| **Рефералка** | `t.me/<bot>?startapp=ref_<id>` или `/start ref_<id>`, % от пополнений реферала. |
-| **Админка в боте** | `/stats`, `/user`, `/give`, `/ban`, `/unban`, `/withdrawals`, `/refund`, `/botbalance`. |
+| **Вывод** | Игрок указывает сумму и адрес TON → баланс сразу списывается → админу приходит заявка с кнопкой «Открыть перевод в Tonkeeper» (адрес, сумма и комментарий уже подставлены). Отправили — «✅ Отправил», иначе «❌ Отклонить» (деньги вернутся). Требование отыгрыша депозита. |
+| **Рефералка** | `t.me/<bot>?startapp=ref_<ID игрока>` или `/start ref_<ID>`, % от пополнений реферала. Старые ссылки с Telegram ID тоже работают. |
+| **Админка в боте** | `/stats`, `/user`, `/give #ID 2.5`, `/ban`, `/unban`, `/withdrawals`, `/paid`, `/deposits`, `/credit`. Игрока можно указать Telegram ID или `#ID` из профиля. |
 | **Лимиты** | мин/макс ставка, макс. выигрыш за ставку, лимиты депозита/вывода, rate limit ставок. |
 
 ```
@@ -30,16 +32,19 @@ app/
   models.py             # таблицы БД
   telegram_auth.py      # проверка initData
   fairness.py           # provably fair RNG
-  payouts.py            # способы выплаты (manual / gifts)
+  money.py              # USDT: целые микро-единицы, перевод из «0.1» и обратно
+  ton/                  # сеть TON: адреса, разбор переводов USDT, клиент toncenter, сторож пополнений
   ratelimit.py
   games/                # чистая математика игр, без БД
-    base.py  instant.py  mines.py
-  services/             # бизнес-логика: wallet, payments, games, withdrawals, seeds, users, stats
+    base.py  instant.py  mines.py  extra.py (рулетка, слоты)  crash.py
+  vip.py                # уровни привилегий
+  services/             # бизнес-логика: wallet, deposits, games, withdrawals, seeds, users, stats, leaderboard, bonus
   api/                  # HTTP-роуты мини-аппа
-  bot/                  # aiogram: handlers/{user,payments,admin}.py, notify.py
+  bot/                  # aiogram: handlers/{user,admin}.py, notify.py
 migrations/             # Alembic
-webapp/                 # минимальный фронт
-tests/                  # 100+ тестов на живом PostgreSQL
+webapp/                 # фронт мини-аппа (чистый JS) + assets/ с иллюстрациями; адрес API — в webapp/config.js
+.github/workflows/      # публикация webapp/ на GitHub Pages
+tests/                  # 130+ тестов на живом PostgreSQL
 ```
 
 ---
@@ -48,8 +53,9 @@ tests/                  # 100+ тестов на живом PostgreSQL
 
 ### 1. Бот
 1. @BotFather → `/newbot` → токен в `BOT_TOKEN`.
-2. Платёжного провайдера подключать **не нужно** — звёзды работают без него.
-3. Мини-апп: бот сам ставит кнопку меню «🎰 Играть» на `WEBAPP_URL`. Если хотите прямую ссылку `t.me/<bot>/<app>` — `/newapp` в BotFather с тем же URL (тогда реф-ссылки тоже можно делать через неё).
+2. Кошелёк казино: создайте отдельный кошелёк TON (Tonkeeper) только для казино и впишите его адрес в `TON_WALLET_ADDRESS`. На нём должно быть немного TON (≈1–2) — на газ при выводах. Сид-фразу кошелька **никуда не вписывайте** — серверу она не нужна: он только читает входящие переводы.
+   Сделайте тестовый перевод 1 USDT с комментарием-ID и убедитесь, что он зачислился, прежде чем звать игроков.
+3. Мини-апп: бот сам ставит кнопку меню «💎 ARA Casino» на `WEBAPP_URL`. Если хотите прямую ссылку `t.me/<bot>/<app>` — `/newapp` в BotFather с тем же URL (тогда реф-ссылки тоже можно делать через неё).
 
 ### 2. Docker
 ```bash
@@ -78,29 +84,40 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 Откройте `webapp/index.html` в браузере через любой локальный сервер (`python -m http.server` в папке `webapp`,
 затем `http://localhost:8000`). Без Telegram фронт включает демо-режим: `webapp/demo-api.js` отвечает
 вместо сервера в том же формате, что и настоящий API, и считает игры по тому же provably-fair алгоритму
-(на одинаковых сидах исходы совпадают с бэкендом). Баланс хранится в браузере, «Настройки → Сбросить демо» — 1000 ⭐.
+(на одинаковых сидах исходы совпадают с бэкендом — сверено на 400 ставках рулетки, слотов и Crash). Баланс хранится в браузере,
+«Настройки → Сбросить демо» — 100 USDT. Пополнение в демо — кнопкой «Демо: сымитировать перевод». В демо включён ежедневный бонус 0.50 USDT, соперники в рейтинге и чате — боты.
 
-Внутри Telegram (есть `initData`) фронт всегда ходит в настоящий API. Если демо в проде не нужно —
+Внутри Telegram (есть `initData`) фронт ходит в настоящий API — кроме случая `demo: true` в `webapp/config.js`
+(удобно посмотреть приложение в Telegram, пока сервера нет). Если демо в проде не нужно —
 удалите строку `<script src="demo-api.js"></script>` из `webapp/index.html`.
 
+### Фронт на GitHub Pages
+GitHub Pages отдаёт только статические файлы: игры с настоящими деньгами требуют работающий сервер (бот + API + PostgreSQL)
+на VPS или в облаке. Pages подходит, чтобы раздавать `webapp/`, а сервер держать отдельно.
+1. Репозиторий **публичный** (на бесплатном плане Pages для приватных не работает) — иначе шаг `configure-pages`
+   падает с «Get Pages site failed … Not Found».
+2. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+3. Workflow `.github/workflows/pages.yml` уже в проекте: публикует папку `webapp/` при пуше в `main`.
+4. В `webapp/config.js` впишите `apiBase` — адрес сервера; на сервере — `CORS_ORIGINS=https://ИМЯ.github.io`
+   и `WEBAPP_URL=https://ИМЯ.github.io/РЕПОЗИТОРИЙ/`. Пока сервера нет — поставьте `demo: true`.
+
 Файлы фронта:
-- `index.html` — каркас: хедер, экран, футер; шрифты Golos Text и Yeseva One с Google Fonts.
-- `style.css` — две темы (День / Ночь) на палитре `#5dc165` / `#36703f`.
-- `app.js` — роутер и все экраны: Играть (карусели новостей, слотов, мини-игр), Чат, Меню (Профиль, Настройки, Помощь), кошелёк, игры.
+- `index.html` — каркас: хедер, экран, футер; шрифты Golos Text и Prata с Google Fonts.
+- `style.css` — две темы (День / Ночь): сапфировая основа (`#3a74ff`, глубокий `#1c3b8f`, фон `#0a1226`), золото `#e8c879` — только для денег (значок USDT), выигрышей и наград.
+- `app.js` — роутер и все экраны: Играть (карусели новостей, слотов, мини-игр), Чат, Меню (Профиль, Настройки, Помощь), кошелёк, игры, рейтинг.
+- `assets/` — иллюстрации (WebP, ужаты до нужного размера, ~0,8 МБ): обложки игр, символы слотов, колесо рулетки, ракета, медали уровней.
 - `i18n.js` — строки интерфейса RU/EN. `content.js` — соглашение, политика, ответственная игра, FAQ, правила чата, новости.
 - `demo-api.js` — демо-бэкенд в браузере.
 
 Юридические тексты в `content.js` — шаблон: перед запуском их должен проверить юрист и вписать юрлицо оператора.
 
-#### Что новый фронт ждёт от бэкенда (пока есть только в демо)
+#### Что фронт ждёт от бэкенда, но пока есть только в демо
 | Метод | Что нужно |
 |---|---|
-| `GET /api/me` | добавить `public_id` (внутренний ID), `telegram_id`, `nickname`, `photo_url`, `vip {level, key, cashback, wagered, current_min, next_min, next_key}`, `referral {link, invited, earned, percent}` |
-| `POST /api/me/nickname` `{nickname}` | выбор ника при первом входе и смена в профиле: 3–20 символов (буквы, цифры, пробел, `_ . -`), уникален без учёта регистра (`nickname_taken`), нельзя похожие на администрацию (`nickname_reserved`: содержит admin/support/moder/official/админ/поддерж/модер/официал или равен cthulhu/ктулху/telegram/system). Пока ник не выбран, `/api/me` отдаёт `nickname: null` — фронт показывает шаг выбора ника |
 | `GET /api/chat/messages?after_id&lang` | `{messages:[{id, kind:"user"\|"win", user:{public_id,nickname,vip_level,photo_url}, text, game, amount, created_at}], online, me:{public_id}}` |
 | `POST /api/chat/messages` `{text}` | до 300 символов, не чаще раза в 2 с, мут/бан модератором |
-| `POST /api/games/slots/play` `{amount, params:{slot}}` | слоты 3×3, 5 линий; алгоритм и таблица выплат — в `demo-api.js` (блок `slots`) |
-| `GET /api/config` | добавить `vip_levels` и игру `slots` с `themes`, `weights`, `pays`, `lines` |
+
+Всё остальное (ник, внутренний ID, уровни, слоты, рулетка, Crash, рейтинг, бонус) уже есть в API.
 
 ### Polling или webhook
 - `BOT_MODE=polling` — проще всего, для разработки и одного сервера.
@@ -113,18 +130,26 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 
 ## Деньги
 
-**Единица — 1 звезда, всё в целых числах.** Выплата = `floor(ставка × множитель)`, поэтому `MIN_BET` не стоит делать меньше ~10: на ставке в 1 ⭐ округление съедает выигрыш.
+**Валюта — USDT, внутри всё в целых микро-USDT** (1 USDT = 1 000 000 — ровно как у токена USDT в сети TON, так что сумма перевода зачисляется без пересчёта). В `.env` суммы пишутся обычно: `MIN_BET=0.1`. Выплата = `floor(ставка × множитель)` в микро-единицах — округление не больше 0.000001 USDT. API отдаёт суммы тоже в микро-USDT, фронт делит на 1 000 000.
 
 **Инвариант:** `sum(transactions.amount) == users.balance` для каждого юзера (проверяется в тестах). Меняйте баланс только через `services/wallet.apply()` после `lock_user()`.
 
-Типы транзакций: `deposit`, `bet`, `win`, `withdrawal`, `withdrawal_refund`, `payment_refund`, `referral`, `admin`, `bonus`.
+Типы транзакций: `deposit`, `bet`, `win`, `withdrawal`, `withdrawal_refund`, `referral`, `admin`, `bonus`.
+
+### Пополнение — как устроена защита
+- Зачисляются только уведомления `transfer_notification`, пришедшие на кошелёк казино **от его настоящего USDT-кошелька**.
+  Адрес этого jetton-кошелька сервер спрашивает у самого контракта USDT (`get_wallet_address`), поэтому подделка
+  «USDT» с другим контрактом не пройдёт. Можно задать его и вручную: `TON_USDT_JETTON_WALLET` (виден в tonviewer).
+- Перевод учитывается один раз: уникальный хэш транзакции в `ton_deposits`. Позиция чтения хранится в `kv`.
+- При первом запуске старая история кошелька не зачисляется — только новые переводы.
+- Сторож запускайте в одном процессе (`DEPOSIT_WATCHER=true` только у одного экземпляра).
+- Перевод без ID / с несуществующим ID: статус `unmatched`, админу приходит уведомление, `/credit <номер> #ID` зачисляет.
 
 ### Вывод — важно знать
-В Bot API нет метода «перевести звёзды пользователю». Поэтому:
-- **`manual`** (по умолчанию) — админ платит сам любым способом и жмёт «Выплатить» (это просто фиксирует выплату).
-- **`gifts`** — бот подбирает набор обычных подарков на сумму ≤ заявки (DP по номиналам из `getAvailableGifts`), проверяет `getMyStarBalance` и шлёт их `sendGift`. Остаток, который нельзя набрать подарками, возвращается на баланс. При обмене подарка на звёзды пользователь получает сумму по курсу Telegram — она может быть меньше цены подарка, пропишите это в условиях.
-- Звёзды от продаж становятся доступны боту не мгновенно — держите на балансе бота запас для выплат.
-- Свой способ: класс `PayoutMethod` в `app/payouts.py`.
+Автоматических выплат нет намеренно: для них серверу нужна сид-фраза горячего кошелька, а это главный риск кражи.
+Админ отправляет USDT из Tonkeeper по кнопке в заявке (адрес, сумма и комментарий `ARA Casino #N` подставлены)
+и жмёт «✅ Отправил» — или `/paid N <хэш>`, чтобы сохранить хэш перевода. Газ сети TON (~0.05 TON за перевод)
+платит кошелёк казино; `WITHDRAW_FEE` позволяет удерживать комиссию с игрока.
 
 Защита от «пополнил → сразу вывел»: `WITHDRAW_WAGER_RATIO` (по умолчанию нужно проставить сумму депозитов ×1).
 
@@ -134,7 +159,7 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 
 1. У каждого игрока активная пара: `server_seed` (секрет) + `client_seed`, `nonce` растёт с каждой ставкой. `sha256(server_seed)` виден заранее (`GET /api/fair`).
 2. Случайные числа: `HMAC_SHA256(key=server_seed, msg=f"{client_seed}:{nonce}:{cursor}")`, каждые 4 байта → float в [0,1).
-3. `POST /api/fair/rotate` раскрывает старый `server_seed` и выдаёт новую пару. Во время активной игры Mines ротация запрещена (иначе раскрылись бы мины).
+3. `POST /api/fair/rotate` раскрывает старый `server_seed` и выдаёт новую пару. Во время активной игры Mines или полёта в Crash ротация запрещена (иначе раскрылись бы мины или точка краха).
 4. Любой может пересчитать ставку: `POST /api/fair/verify` (без авторизации) или своим скриптом.
 
 **Не меняйте `app/fairness.py`** после запуска — старые ставки перестанут проверяться (тест `test_rng_known_vector` это ловит).
@@ -147,13 +172,20 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 
 | Метод | Путь | Описание |
 |---|---|---|
-| GET | `/api/config` | игры, лимиты, таблицы Plinko, пресеты депозита |
-| GET | `/api/me` | профиль, баланс, реф-ссылка, сколько осталось отыграть |
-| POST | `/api/wallet/invoice` `{amount}` | ссылка на оплату звёздами → `Telegram.WebApp.openInvoice(link)` |
+| GET | `/api/config` | игры, лимиты, таблицы Plinko, `currency: {code: "USDT", decimals: 6, network: "TON"}`, пресеты депозита |
+| GET | `/api/config` → `vip_levels`, `daily_bonus` | уровни привилегий и размер бонуса |
+| GET | `/api/me` | профиль: `public_id`, `telegram_id`, `nickname` (null — фронт попросит выбрать), `vip`, `referral {link, invited, earned, percent}`, `bonus`, сколько осталось отыграть |
+| POST | `/api/me/nickname` `{nickname}` | выбрать/сменить ник: 3–20 символов (буквы, цифры, пробел, `_ . -`), ошибки `nickname_taken`, `nickname_reserved` (похож на администрацию или на название казино) |
+| POST | `/api/bonus/claim` | ежедневный бонус (`bonus_disabled`, `bonus_claimed`) |
+| GET | `/api/leaderboard?period=week\|all` | `{top:[{rank, public_id, nickname, photo_url, vip_level, wagered, best_win}], me:{rank, wagered}\|null}` |
+| GET | `/api/wallet/deposit` | `{enabled, address, memo, jetton_master, min, presets, links: {ton, tonkeeper}}` — куда и с каким комментарием переводить |
 | GET | `/api/wallet/transactions?limit&before_id` | леджер |
-| POST | `/api/wallet/withdraw` `{amount}` | заявка на вывод |
+| POST | `/api/wallet/withdraw` `{amount, address}` | заявка на вывод на адрес TON (`bad_address` — опечатка, тестовая сеть или адрес казино) |
 | GET | `/api/wallet/withdrawals` | мои заявки |
-| POST | `/api/games/{dice\|coinflip\|limbo\|plinko}/play` `{amount, params}` | мгновенная игра |
+| POST | `/api/games/{dice\|coinflip\|limbo\|plinko\|roulette\|slots}/play` `{amount, params}` | мгновенная игра |
+| GET | `/api/games/crash/active` | текущий полёт (без точки краха) + `server_now` для синхронизации часов |
+| POST | `/api/games/crash/start` `{amount, params:{auto_cashout?}}` | взлёт |
+| POST | `/api/games/crash/cashout` | забрать на текущем множителе (время — серверное) |
 | GET | `/api/games/mines/active` | текущая игра Mines |
 | POST | `/api/games/mines/start` `{amount, params:{mines}}` | начать |
 | POST | `/api/games/mines/reveal` `{tile}` | открыть клетку 0–24 |
@@ -169,6 +201,9 @@ curl -H "Authorization: tma $(python scripts/make_initdata.py 123456789)" localh
 - limbo: `{target: 1.01–1000000}`
 - plinko: `{rows: 8–16, risk: "low"|"medium"|"high"}`
 - mines: `{mines: 1–24}`
+- roulette: `{bet: "red"|"black"|"even"|"odd"|"zero"|0–36}` — цвет и чётность ×2, число и зеро ×36
+- slots: `{slot: "classic"|"treasury"|"royal"}` — 3×3, 5 линий; темы отличаются только картинками
+- crash: `{auto_cashout: 1.01–1000}` (необязательно). Множитель `e^(0.18·t)`; точка краха `floor(RTP/(1−r)·100)/100`, от 1.00 до 1000. Потолок — `MAX_PAYOUT / ставка`: на нём срабатывает автовывод. Расчёт ленивый: закрыл приложение — полёт досчитается при следующем запросе (автовывод сработает, без него ставка сгорит).
 
 ---
 
@@ -200,7 +235,7 @@ class Wheel(InstantGame):
 createdb casino_test
 TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/casino_test pytest -q
 ```
-Покрыто: подпись initData, детерминизм RNG, RTP каждой игры (аналитически и симуляцией), гонка 30 параллельных ставок, двойная доставка `successful_payment`, возвраты, рефералка, все ветки вывода (включая частичный сбой подарков), сквозные сценарии API, хендлеры бота через настоящий `Dispatcher`.
+Покрыто: подпись initData, детерминизм RNG, RTP каждой игры (аналитически и симуляцией), гонка 30 параллельных ставок, повторная доставка одного перевода, поддельный «USDT», разбор комментариев (в т.ч. длинных и в ссылке), пагинация сторожа, клиент toncenter на локальном сервере, адреса TON (контрольная сумма, тестовая сеть), рефералка, вывод с комиссией, сквозные сценарии API, хендлеры бота через настоящий `Dispatcher`.
 
 ---
 
@@ -208,10 +243,12 @@ TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/casino_t
 
 - [ ] HTTPS, `BOT_MODE=webhook`, длинный `WEBHOOK_SECRET`, `DEBUG=false`
 - [ ] Бэкапы PostgreSQL
-- [ ] Свой текст `/terms` и `/paysupport` (команда `/paysupport` обязательна для ботов с платежами)
+- [ ] Свой текст `/terms` и `/support`
+- [ ] Отдельный кошелёк TON для казино, тестовый перевод 1 USDT с комментарием-ID зачислился
+- [ ] Ключ toncenter (`TONCENTER_API_KEY`, у @tonapibot) — без него 1 запрос в секунду
 - [ ] Подобрать лимиты (`MAX_BET`, `MAX_PAYOUT`) под свой банкролл
 - [ ] Азартные игры регулируются законом в большинстве стран, а условия Telegram для разработчиков ограничивают регулируемые товары и услуги — проверьте юридическую сторону и условия Telegram до запуска
 - [ ] Возрастное ограничение и ответственная игра (лимиты, самоисключение — удобно сделать через `is_banned`)
 
 ## Идеи для развития
-Crash в реальном времени (WebSocket + общий раунд), промокоды и бонусы (`TxKind.bonus` уже есть), ежедневный бонус, лидерборды, мультиязычность, веб-админка поверх `services/stats.py`.
+Бэкенд чата, общий раунд Crash для всех игроков (WebSocket), промокоды (`TxKind.bonus` уже есть), еженедельный кешбэк по уровням (проценты уже в `app/vip.py`), веб-админка поверх `services/stats.py`.

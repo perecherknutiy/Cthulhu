@@ -1,5 +1,6 @@
-// Cthulhu — мини-приложение. Чистый JS без сборки.
+// ARA Casino — мини-приложение казино на USDT. Чистый JS без сборки.
 // Внутри Telegram ходит в настоящий API, вне Telegram (если подключён demo-api.js) — в демо-режиме.
+// Адрес API и принудительное демо — в config.js.
 (function () {
   "use strict";
 
@@ -7,8 +8,10 @@
   tg?.ready();
   tg?.expand();
   tg?.disableVerticalSwipes?.(); // своя прокрутка: случайный свайп вниз не сворачивает приложение
-  const DEMO = !tg?.initData && !!window.DemoApi;
-  const VERSION = "0.3.0";
+  const CFG = window.ARA_CONFIG || {};
+  const DEMO = !!window.DemoApi && (CFG.demo === true || !tg?.initData);
+  const API_BASE = String(CFG.apiBase || "").replace(/\/+$/, "");
+  const VERSION = "0.5.0";
 
   // ================================================================ helpers
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -18,6 +21,15 @@
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const locale = () => (S.lang === "ru" ? "ru-RU" : "en-US");
   const fmt = (n) => Number(n || 0).toLocaleString(locale());
+  // Деньги — USDT. API отдаёт целые микро-USDT (1 USDT = 1 000 000); показываем 2–4 знака, лишнее отбрасываем.
+  const U = 1e6;
+  const usd = (u) => {
+    const n = Math.round(Number(u || 0));
+    const v = Math.floor(Math.abs(n) / 100) / 1e4;
+    return (n < 0 ? "−" : "") + v.toLocaleString(locale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  };
+  // ввод «12,5» / «12.50» → микро-USDT (точность 0.0001)
+  const toUnits = (x) => Math.round(parseFloat(String(x).replace(",", ".").replace(/\s/g, "")) * 1e4) * 100 || 0;
   const fmtX = (m) => Number(m).toLocaleString(locale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "×";
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
   const fmtDate = (iso) => new Date(iso).toLocaleString(locale(), { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -49,54 +61,42 @@
     doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
     check: '<path d="M20 6 9 17l-5-5"/>',
     lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    grid: '<rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/>',
+    trophy: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>',
     pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
     support: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1v-6h3zM3 19a2 2 0 0 0 2 2h1v-6H3z"/>',
   };
   const ic = (name, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name]}</svg>`;
-  const STAR = '<svg class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2l2.95 6.3 6.85.8-5.07 4.7 1.36 6.8L12 17.4l-6.09 3.4 1.36-6.8L2.2 9.3l6.85-.8z"/></svg>';
-  const LOGO = `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="31" fill="#36703f"/>
-    <path fill="#5dc165" d="M32 11c-9 0-15 6.4-15 14.6 0 4.7 2 8.3 5 10.6-1 4.2-3.7 7.3-7 8.9 1.9 1.3 5.4 1 8-1.2.8 3.9-.4 7.3-2.4 9.7 3.3.2 6.5-2 8-5.4 1 3 2.6 5.3 2.9 8.2 2-1.9 3-4.7 2.9-8.2 1.4 3.4 4.6 5.6 8 5.4-2-2.4-3.2-5.8-2.4-9.7 2.6 2.2 6.1 2.5 8 1.2-3.3-1.6-6-4.7-7-8.9 3-2.3 5-5.9 5-10.6C47 17.4 41 11 32 11z"/>
-    <ellipse cx="26.4" cy="24.6" rx="2.6" ry="3.2" fill="#0c2214"/><ellipse cx="37.6" cy="24.6" rx="2.6" ry="3.2" fill="#0c2214"/>
-    <circle cx="27.2" cy="23.6" r=".9" fill="#c9f2cc"/><circle cx="38.4" cy="23.6" r=".9" fill="#c9f2cc"/></svg>`;
+  // значок USDT: ₮ в круге
+  const CUR = '<svg class="cur" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11"/><path class="cur-t" d="M6.6 6.4h10.8V9h-4.1v1.9c2.5.2 4.4.8 4.4 1.6s-1.9 1.4-4.4 1.6v4.6h-2.6v-4.6c-2.5-.2-4.4-.8-4.4-1.6s1.9-1.4 4.4-1.6V9H6.6zm4.1 5.2c-1.6.1-2.6.4-2.6.6s1.2.6 3.9.6 3.9-.3 3.9-.6-1-.5-2.6-.6v1h-2.6z"/></svg>';
+  const LOGO = `<svg viewBox="0 0 64 64" aria-hidden="true"><defs>
+    <linearGradient id="au-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a74ff"/><stop offset="1" stop-color="#0c1b4d"/></linearGradient>
+    <linearGradient id="au-gd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7e5ad"/><stop offset="1" stop-color="#c8963a"/></linearGradient></defs>
+    <rect width="64" height="64" rx="16" fill="url(#au-bg)"/><rect x="1.5" y="1.5" width="61" height="61" rx="14.5" fill="none" stroke="url(#au-gd)" stroke-opacity=".6"/>
+    <path d="M16 46 29 14h6l14 32h-8l-3-8H26l-3 8Zm12-14h8l-4-12Z" fill="url(#au-gd)"/><path d="m32 49 4 4-4 4-4-4Z" fill="url(#au-gd)"/></svg>`;
 
-  // ---------------------------------------------------------------- art for cards & banners
-  const ART = {
-    dice: `<svg viewBox="0 0 146 118"><g transform="rotate(-12 55 60)"><rect x="28" y="34" width="50" height="50" rx="11" fill="var(--accent)"/>
-      <g fill="var(--accent-ink)"><circle cx="41" cy="47" r="4.5"/><circle cx="53" cy="59" r="4.5"/><circle cx="65" cy="71" r="4.5"/></g></g>
-      <g transform="rotate(14 98 58)"><rect x="74" y="30" width="46" height="46" rx="10" fill="var(--moss)"/>
-      <g fill="#d8efd9"><circle cx="86" cy="42" r="4"/><circle cx="108" cy="42" r="4"/><circle cx="86" cy="64" r="4"/><circle cx="108" cy="64" r="4"/></g></g></svg>`,
-    coinflip: `<svg viewBox="0 0 146 118"><ellipse cx="73" cy="98" rx="34" ry="5" fill="var(--line)"/><circle cx="73" cy="55" r="36" fill="var(--moss)"/>
-      <circle cx="73" cy="52" r="36" fill="var(--accent)"/><circle cx="73" cy="52" r="27" fill="none" stroke="var(--accent-ink)" stroke-opacity=".35" stroke-width="3"/>
-      <path transform="translate(61 40) scale(1)" fill="var(--accent-ink)" fill-opacity=".8" d="M12 2.2l2.95 6.3 6.85.8-5.07 4.7 1.36 6.8L12 17.4l-6.09 3.4 1.36-6.8L2.2 9.3l6.85-.8z"/></svg>`,
-    limbo: `<svg viewBox="0 0 146 118"><path d="M18 100 C 60 98, 92 84, 124 22" fill="none" stroke="var(--accent)" stroke-width="5" stroke-linecap="round"/>
-      <path d="M18 100 C 60 98, 92 84, 124 22 L124 100 Z" fill="var(--accent)" opacity=".14"/><circle cx="124" cy="22" r="8" fill="var(--accent)"/>
-      <text x="22" y="40" font-family="Golos Text, sans-serif" font-weight="800" font-size="24" fill="var(--text)">2.00×</text></svg>`,
-    plinko: `<svg viewBox="0 0 146 118"><g fill="var(--faint)">${(() => { let s = ""; for (let r = 0; r < 5; r++) for (let i = 0; i < r + 3; i++) s += `<circle cx="${73 + (i - (r + 2) / 2) * 18}" cy="${20 + r * 16}" r="3"/>`; return s; })()}</g>
-      <circle cx="64" cy="44" r="7" fill="var(--accent)"/>
-      <g>${[0, 1, 2, 3, 4, 5].map((i) => `<rect x="${19 + i * 18}" y="98" width="15" height="10" rx="3" fill="${i === 0 || i === 5 ? "var(--accent)" : "var(--surface)"}"/>`).join("")}</g></svg>`,
-    mines: `<svg viewBox="0 0 146 118">${[0, 1, 2].map((r) => [0, 1, 2].map((c) => `<rect x="${36 + c * 26}" y="${20 + r * 26}" width="22" height="22" rx="6" fill="${r === 1 && c === 1 ? "var(--accent)" : r === 0 && c === 2 ? "var(--danger)" : "var(--surface)"}"/>`).join("")).join("")}
-      <path d="M73 52l6 6-6 9-6-9z" fill="var(--accent-ink)"/><circle cx="99" cy="31" r="5" fill="#fff" opacity=".9"/></svg>`,
+  // ---------------------------------------------------------------- иллюстрации (webapp/assets)
+  const A = (p) => `assets/${p}.webp`;
+  const img = (p, cls = "", alt = "") => `<img src="${A(p)}"${cls ? ` class="${cls}"` : ""} alt="${esc(alt)}" draggable="false" decoding="async">`;
+  const COVER = { dice: "covers/dice", coinflip: "covers/coinflip", plinko: "covers/plinko", mines: "covers/mines", roulette: "covers/roulette", crash: "covers/crash" };
+  const cover = (g) => (g === "limbo" ? `${img("effects/gold-starburst")}<span class="limbo-x">2,00×</span>` : img(COVER[g]));
+  const NEWS_IMG = { rocket: "future/rocket", "chip-stack": "roulette/chip-stack", trophy: "shared/trophy", seven: "slots/seven", "gift-sapphire": "shared/gift-sapphire" };
+  // символы слотов: от самого частого (0) к самому редкому (5) — порядок как в таблице выплат
+  const SLOT_SYMBOLS = {
+    classic: ["slots/cherries", "slots/lemon", "slots/bell", "slots/star", "slots/diamond-blue", "slots/seven"],
+    treasury: ["shared/daily-token", "shared/key", "shared/mystery-token", "shared/gift-sapphire", "shared/chest-open", "mines/gem-emerald"],
+    royal: ["shared/heart", "shared/shield", "shared/medal-silver", "shared/medal-gold", "shared/trophy", "shared/crown-diamond"],
   };
-  const NEWS_ART = {
-    tentacles: `<svg viewBox="0 0 200 190" class="art"><defs><linearGradient id="tg1" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#9be3a0" stop-opacity=".95"/><stop offset="1" stop-color="#5dc165" stop-opacity=".55"/></linearGradient></defs>
-      <path d="M120 200 C 92 160, 140 128, 112 92 C 96 70, 106 44, 130 42 C 118 54, 120 70, 134 90 C 160 126, 128 160, 152 200 Z" fill="url(#tg1)"/>
-      <path d="M168 200 C 150 170, 186 146, 172 112 C 164 92, 174 76, 192 76 C 184 88, 186 100, 194 116 C 206 146, 186 170, 198 200 Z" fill="url(#tg1)" opacity=".75"/>
-      <g fill="#0c2214" opacity=".35"><circle cx="124" cy="120" r="3.5"/><circle cx="129" cy="136" r="3.5"/><circle cx="130" cy="153" r="3.5"/><circle cx="135" cy="170" r="3.5"/><circle cx="180" cy="130" r="3"/><circle cx="183" cy="146" r="3"/><circle cx="185" cy="162" r="3"/></g></svg>`,
-    reels: `<svg viewBox="0 0 200 190" class="art"><g transform="rotate(-8 130 100)">${[0, 1, 2].map((i) => `<rect x="${70 + i * 42}" y="48" width="36" height="96" rx="10" fill="#f2fbf3" opacity="${0.92 - i * 0.12}"/>`).join("")}
-      <text x="88" y="108" font-size="26" text-anchor="middle">🐙</text><text x="130" y="108" font-size="26" text-anchor="middle">🐙</text><text x="172" y="108" font-size="26" text-anchor="middle">🐙</text></g></svg>`,
-    eye: `<svg viewBox="0 0 200 190" class="art"><path d="M40 100 C 80 40, 170 40, 200 100 C 170 160, 80 160, 40 100 Z" fill="#f2fbf3" opacity=".9"/>
-      <circle cx="120" cy="100" r="34" fill="#5dc165"/><circle cx="120" cy="100" r="22" fill="#36703f"/><ellipse cx="120" cy="100" rx="6" ry="18" fill="#0c2214"/><circle cx="130" cy="88" r="5" fill="#f2fbf3"/></svg>`,
-    gift: `<svg viewBox="0 0 200 190" class="art"><rect x="78" y="86" width="96" height="84" rx="10" fill="#f2fbf3" opacity=".92"/><rect x="70" y="66" width="112" height="28" rx="8" fill="#9be3a0"/>
-      <rect x="118" y="66" width="16" height="104" fill="#36703f"/><path d="M126 66 C 108 34, 84 44, 98 62 Z M126 66 C 144 34, 168 44, 154 62 Z" fill="#9be3a0"/></svg>`,
-  };
+  const VIP_IMG = ["shared/medal-bronze", "shared/medal-silver", "shared/medal-gold", "slots/diamond-blue", "shared/crown-diamond"];
+  const preload = (paths) => paths.forEach((p) => { const i = new Image(); i.src = A(p); });
 
   // ================================================================ settings
-  const SETTINGS_KEY = "cthulhu-settings-v1";
+  const SETTINGS_KEY = "ara-settings-v2"; // v2 — суммы в USDT (микро-единицы)
   const userLang = (tg?.initDataUnsafe?.user?.language_code || navigator.language || "ru").toLowerCase();
   const DEFAULTS = {
     lang: userLang.startsWith("ru") || userLang.startsWith("uk") || userLang.startsWith("be") || userLang.startsWith("kk") ? "ru" : "en",
     theme: "auto", sound: true, haptics: true, motion: true, hideBalance: false,
-    confirmAbove: 0, depositLimit: 0, pauseUntil: 0, ageOk: false, bet: 50,
+    confirmAbove: 0, depositLimit: 0, pauseUntil: 0, ageOk: false, bet: 1_000_000, crashAuto: 0,
   };
   let S = { ...DEFAULTS };
   try { Object.assign(S, JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")); } catch { /* приватный режим */ }
@@ -174,7 +174,7 @@
   class ApiErr extends Error { constructor(code, message) { super(message); this.code = code; } }
   async function api(path, body) {
     if (DEMO) return window.DemoApi.request(path, body);
-    const res = await fetch(path, {
+    const res = await fetch(API_BASE + path, {
       method: body === undefined ? "GET" : "POST",
       headers: { "Content-Type": "application/json", Authorization: "tma " + (tg?.initData || "") },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -185,8 +185,8 @@
   }
   function errText(e) {
     const c = state.config || {};
-    const vars = { min_bet: c.min_bet, max_bet: c.max_bet, max_payout: fmt(c.max_payout), dep_min: c.deposit?.min,
-                   dep_max: c.deposit?.max, wd_min: c.withdraw?.min, wd_max: c.withdraw?.max, left: fmt(state.me?.wager_left) };
+    const vars = { min_bet: usd(c.min_bet), max_bet: usd(c.max_bet), max_payout: usd(c.max_payout), dep_min: usd(c.deposit?.min),
+                   wd_min: usd(c.withdraw?.min), wd_max: usd(c.withdraw?.max), left: usd(state.me?.wager_left) };
     if (e?.code && hasKey("err." + e.code)) return t("err." + e.code, vars);
     return e?.message || t("err.generic");
   }
@@ -204,11 +204,11 @@
     toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
   }
 
-  function openSheet(html, { onClose } = {}) {
+  function openSheet(html, { onClose, cls = "" } = {}) {
     closeSheet({ instant: true });
     const bg = document.createElement("div");
     bg.className = "sheet-bg";
-    bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true"><div class="grip"></div>${html}</div>`;
+    bg.innerHTML = `<div class="sheet ${cls}" role="dialog" aria-modal="true"><div class="grip"></div>${html}</div>`;
     bg.addEventListener("click", (e) => { if (e.target === bg) closeSheet(); });
     bg._onClose = onClose;
     document.body.appendChild(bg);
@@ -239,7 +239,9 @@
 
   // ================================================================ state & router
   const state = { config: null, me: null, route: "play", stack: [], cleanup: [], bets: {} };
-  const ROOT_OF = (r) => (r === "chat" ? "chat" : /^(play|game|slot|wallet)/.test(r) ? "play" : "menu");
+  // рейтинг открывается и с «Играть» (новости), и из профиля — подсвечиваем вкладку, откуда пришли
+  const ROOT_OF = (r) => (r === "chat" ? "chat" : /^(play|game|slot|wallet)/.test(r) ? "play"
+    : r === "leaders" && state.stack[0] && ROOT_OF(state.stack[0]) === "play" ? "play" : "menu");
 
   // ---------------------------------------------------------------- переходы
   // forward — вглубь (новый экран приезжает справа), back — назад (слева),
@@ -322,7 +324,7 @@
     const [name, arg] = r.split("/");
     const screens = { play: renderPlay, chat: renderChat, profile: renderProfile, settings: renderSettings, help: renderHelp,
                       about: renderAbout, doc: renderDoc, wallet: renderWallet, history: renderHistory, txs: renderTxs,
-                      fair: renderFair, game: renderGame, slot: renderSlot };
+                      fair: renderFair, game: renderGame, slot: renderSlot, leaders: renderLeaders };
     screen.innerHTML = "";
     view.dataset.screen = name;
     (screens[name] || renderPlay)(screen, arg);
@@ -336,8 +338,8 @@
   // ================================================================ shell: header & tabbar
   function renderHeader() {
     $("#topbar").innerHTML = `<div class="topbar-in">
-      <button class="brand" id="brand" aria-label="Cthulhu">${LOGO}<span class="brand-name">Cthulhu</span></button>
-      <div class="wallet-pill"><span class="bal num" id="hdr-bal">${STAR}<span>—</span></span>
+      <button class="brand" id="brand" aria-label="ARA Casino">${LOGO}<span class="brand-name">ARA Casino</span></button>
+      <div class="wallet-pill"><span class="bal num" id="hdr-bal">${CUR}<span>—</span></span>
         <button class="plus-btn" id="hdr-plus" aria-label="${esc(t("header.topup"))}">${ic("plus")}</button></div></div>`;
     $("#brand").onclick = () => goRoot("play");
     $("#hdr-plus").onclick = () => { fx.tap(); go("wallet"); };
@@ -346,7 +348,7 @@
   function setBalance(b) {
     if (state.me && b != null) state.me.balance = b;
     const el = $("#hdr-bal span");
-    if (el) el.textContent = b == null ? "—" : S.hideBalance ? "•••" : fmt(b);
+    if (el) el.textContent = b == null ? "—" : S.hideBalance ? "•••" : usd(b);
   }
   function renderTabbar() {
     // справа налево: Играть, Чат, Меню
@@ -384,35 +386,77 @@
   function disclaimer() { return `<div class="disclaimer"><span class="age-badge">18+</span><span>${esc(C().disclaimer)}</span></div>`; }
 
   // ================================================================ PLAY
-  const MINI = ["dice", "coinflip", "limbo", "plinko", "mines"];
-  const SLOTS = ["cthulhu", "fruits", "treasure"];
+  const MINI = ["crash", "roulette", "mines", "dice", "coinflip", "limbo", "plinko"];
+  const SLOTS = ["classic", "treasury", "royal"];
+
+  // стрелки ‹ › для карусели: прокрутка на одну карточку, неактивны у краёв
+  const arrows = (target) => `<span class="arrows" data-for="${target}">
+      <button class="arrow" data-dir="-1" aria-label="${esc(t("common.prev"))}" aria-controls="${target}">${ic("back")}</button>
+      <button class="arrow" data-dir="1" aria-label="${esc(t("common.next"))}" aria-controls="${target}">${ic("chev")}</button></span>`;
+  function bindCarousel(track, onUser) {
+    const box = $(`.arrows[data-for="${track.id}"]`);
+    const [prev, next] = box ? $$(".arrow", box) : [];
+    const step = () => (track.firstElementChild?.offsetWidth || 160) + 10;
+    const sync = () => {
+      if (!prev) return;
+      const max = track.scrollWidth - track.clientWidth - 2;
+      prev.disabled = track.scrollLeft <= 2;
+      next.disabled = track.scrollLeft >= max;
+    };
+    const move = (dir) => {
+      fx.tap(); onUser?.();
+      track.scrollBy({ left: dir * step(), behavior: S.motion ? "smooth" : "auto" });
+    };
+    if (prev) { prev.onclick = () => move(-1); next.onclick = () => move(1); }
+    track.tabIndex = 0;
+    track.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); move(e.key === "ArrowLeft" ? -1 : 1); }
+    });
+    track.addEventListener("scroll", sync, { passive: true });
+    requestAnimationFrame(sync);
+  }
+  // меню игр: все слоты и мини-игры одной сеткой
+  function gamesMenu() {
+    const tile = (route, thumb, name, tag) => `<button class="gm-tile" data-go-game="${route}"><span class="gm-thumb">${thumb}</span>
+        <span class="gm-name">${name}</span><span class="gm-tag">${tag}</span></button>`;
+    const sh = openSheet(`<h2>${t("play.menu")}</h2>
+      <div class="gm-group">${t("play.slots")}</div>
+      <div class="gm-grid">${SLOTS.map((id) => tile("slot/" + id, `<span class="gm-slot">${img(SLOT_SYMBOLS[id][5])}</span>`, t("slot." + id), t("slot." + id + ".tag"))).join("")}</div>
+      <div class="gm-group">${t("play.mini")}</div>
+      <div class="gm-grid">${MINI.map((g) => tile("game/" + g, cover(g), t("game." + g), t("game." + g + ".tag"))).join("")}</div>`, { cls: "gm-sheet" });
+    $$("[data-go-game]", sh).forEach((b) => (b.onclick = () => { fx.tap(); closeSheet(); go(b.dataset.goGame); }));
+  }
 
   function renderPlay(view) {
     const news = C().news;
     view.innerHTML = `
       ${DEMO ? `<div class="demo-note"><span>${t("demo.note")}</span></div>` : ""}
-      <section class="rail"><div class="carousel" id="news">${news.map((n, i) => `
-        <article class="news-card ${i % 2 ? "alt" : ""}">${NEWS_ART[n.art] || ""}
+      <button class="games-menu-btn" id="games-menu">${ic("grid")}<span class="grow">${t("play.menu")}</span>
+        <span class="count num">${SLOTS.length + MINI.length}</span>${ic("chev")}</button>
+      <section class="rail"><div class="carousel" id="news" aria-label="${esc(t("play.news"))}">${news.map((n) => `
+        <article class="news-card" style="background-image:url(${A("backgrounds/" + n.bg)})">${n.img ? img(NEWS_IMG[n.img], "art") : ""}
           <div><h3>${esc(n.title)}</h3><p>${esc(n.text)}</p></div>
-          <button class="btn" data-route="${n.route}">${esc(n.cta)}</button></article>`).join("")}</div>
-        <div class="dots" id="news-dots">${news.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</div></section>
+          <button class="btn gold" data-route="${n.route}">${esc(n.cta)}</button></article>`).join("")}</div>
+        <div class="news-nav">${arrows("news").replace('class="arrows"', 'class="arrows split"')}
+          <div class="dots" id="news-dots">${news.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</div></div></section>
 
-      <section class="rail" id="rail-slots"><div class="rail-head"><h2>${t("play.slots")}</h2><span class="hint">${t("play.slots_hint")}</span></div>
-        <div class="carousel">${SLOTS.map((id) => {
-          const th = slotTheme(id);
+      <section class="rail" id="rail-slots"><div class="rail-head"><h2>${t("play.slots")}</h2><span class="hint">${t("play.slots_hint")}</span>${arrows("slots-track")}</div>
+        <div class="carousel" id="slots-track" aria-label="${esc(t("play.slots"))}">${SLOTS.map((id) => {
+          const sym = SLOT_SYMBOLS[id];
           return `<button class="game-card slot-card" data-slot="${id}"><div class="thumb"><div class="slot-thumb">
-            ${[5, 4, 3].map((k) => `<span>${th.symbols[k]}</span>`).join("")}</div></div>
+            ${[5, 4, 3].map((k) => `<span>${img(sym[k])}</span>`).join("")}</div></div>
             <div class="meta"><span class="name">${t("slot." + id)}</span><span class="tag">${t("slot." + id + ".tag")}</span>
             <span class="btn primary">${t("common.play")}</span></div></button>`;
         }).join("")}</div></section>
 
-      <section class="rail"><div class="rail-head"><h2>${t("play.mini")}</h2><span class="hint">${t("play.rtp", { rtp: rtpText() })}</span></div>
-        <div class="carousel">${MINI.map((g) => `
-          <button class="game-card" data-game="${g}"><div class="thumb">${ART[g]}</div>
+      <section class="rail"><div class="rail-head"><h2>${t("play.mini")}</h2><span class="hint">${t("play.rtp", { rtp: rtpText() })}</span>${arrows("mini-track")}</div>
+        <div class="carousel" id="mini-track" aria-label="${esc(t("play.mini"))}">${MINI.map((g) => `
+          <button class="game-card" data-game="${g}"><div class="thumb">${cover(g)}</div>
             <div class="meta"><span class="name">${t("game." + g)}</span><span class="tag">${t("game." + g + ".tag")}</span>
             <span class="btn primary">${t("common.play")}</span></div></button>`).join("")}</div></section>
       ${disclaimer()}`;
 
+    $("#games-menu").onclick = () => { fx.tap(); gamesMenu(); };
     $$("[data-route]", view).forEach((b) => (b.onclick = () => {
       fx.tap();
       const r = b.dataset.route;
@@ -422,18 +466,20 @@
     $$("[data-slot]", view).forEach((b) => (b.onclick = () => { fx.tap(); go("slot/" + b.dataset.slot); }));
     $$("[data-game]", view).forEach((b) => (b.onclick = () => { fx.tap(); go("game/" + b.dataset.game); }));
 
-    // точки и автопрокрутка новостей
+    // точки, стрелки и автопрокрутка новостей (останавливается, как только игрок листает сам)
     const track = $("#news");
     const dots = $$("#news-dots i");
-    let idx = 0;
+    let idx = 0, paused = false;
     const onScroll = () => {
       const w = track.firstElementChild.offsetWidth + 10;
       idx = Math.round(track.scrollLeft / w);
       dots.forEach((d, i) => d.classList.toggle("on", i === idx));
     };
     track.addEventListener("scroll", onScroll, { passive: true });
-    let paused = false;
     track.addEventListener("pointerdown", () => (paused = true));
+    bindCarousel(track, () => (paused = true));
+    bindCarousel($("#slots-track"));
+    bindCarousel($("#mini-track"));
     const timer = setInterval(() => {
       if (paused || !S.motion || document.hidden) return;
       const w = track.firstElementChild.offsetWidth + 10;
@@ -443,14 +489,13 @@
   }
   const rtpText = () => Math.round((1 - (state.config?.house_edge ?? 0.03)) * 100) + "%";
   const slotCfg = () => state.config?.games.find((g) => g.name === "slots");
-  const slotTheme = (id) => slotCfg()?.themes.find((x) => x.id === id) || { symbols: ["?", "?", "?", "?", "?", "?"] };
 
   // ================================================================ BET BOX (общий)
   function betBox(actionLabel, { id = "bet" } = {}) {
     const c = state.config;
-    return `<div class="betbox"><div class="label"><span>${t("bet.amount")}</span><span>${t("bet.limits", { min: c.min_bet, max: fmt(c.max_bet) })}</span></div>
+    return `<div class="betbox"><div class="label"><span>${t("bet.amount")}</span><span>${t("bet.limits", { min: usd(c.min_bet), max: usd(c.max_bet) })}</span></div>
       <div class="bet-row"><button class="step-btn" data-step="-1" aria-label="−">−</button>
-        <label class="field">${STAR}<input id="${id}" class="num" type="number" inputmode="numeric" value="${S.bet}" min="${c.min_bet}" max="${c.max_bet}"></label>
+        <label class="field">${CUR}<input id="${id}" class="num" type="text" inputmode="decimal" autocomplete="off" value="${S.bet / U}" aria-label="${esc(t("bet.amount"))}"><span class="suffix">USDT</span></label>
         <button class="step-btn" data-step="1" aria-label="+">+</button></div>
       <div class="chips"><button data-q="min">${t("bet.min")}</button><button data-q="half">½</button><button data-q="double">×2</button><button data-q="max">${t("bet.max")}</button></div></div>
       <div class="action-dock"><button class="btn primary xl block" data-action>${esc(actionLabel)}</button></div>`;
@@ -458,37 +503,40 @@
   function bindBetBox(root, onChange) {
     const c = state.config;
     const input = $("#bet", root);
+    // ставка хранится в микро-USDT, в поле — обычные доллары с центами
+    const read = () => toUnits(input.value);
     const setV = (v) => {
-      input.value = clamp(Math.round(v) || c.min_bet, c.min_bet, c.max_bet);
-      S.bet = +input.value; saveSettings(); onChange?.();
+      const u = clamp(Math.round((v || c.min_bet) / 10000) * 10000, c.min_bet, c.max_bet); // шаг 0.01
+      input.value = String(u / U);
+      S.bet = u; saveSettings(); onChange?.();
     };
-    input.addEventListener("change", () => setV(+input.value));
-    input.addEventListener("input", () => { S.bet = +input.value || 0; onChange?.(); });
+    input.addEventListener("change", () => setV(read()));
+    input.addEventListener("input", () => { S.bet = read(); onChange?.(); });
     $$("[data-step]", root).forEach((b) => (b.onclick = () => {
       fx.tap();
-      const cur = +input.value || c.min_bet;
-      const step = cur >= 1000 ? 100 : cur >= 100 ? 10 : 5;
+      const cur = read() || c.min_bet;
+      const step = cur >= 100 * U ? 10 * U : cur >= 10 * U ? U : cur >= U ? 0.1 * U : 0.01 * U;
       setV(cur + step * +b.dataset.step);
     }));
     $$("[data-q]", root).forEach((b) => (b.onclick = () => {
       fx.tap();
-      const cur = +input.value || c.min_bet;
+      const cur = read() || c.min_bet;
       const bal = state.me?.balance ?? c.max_bet;
-      setV({ min: c.min_bet, max: Math.min(c.max_bet, Math.max(c.min_bet, bal)), half: cur / 2, double: cur * 2 }[b.dataset.q]);
+      setV({ min: c.min_bet, max: Math.min(c.max_bet, Math.max(c.min_bet, Math.floor(bal / 10000) * 10000)), half: cur / 2, double: cur * 2 }[b.dataset.q]);
     }));
-    return () => clamp(Math.round(+input.value) || 0, 0, 1e9);
+    return () => clamp(read(), 0, 1e15);
   }
   async function preBet(amount) {
     if (S.pauseUntil > Date.now()) { toast(t("rg.paused_until", { date: fmtDate(new Date(S.pauseUntil).toISOString()) })); fx.error(); return false; }
     if (S.confirmAbove && amount >= S.confirmAbove) {
-      return confirmSheet(t("bet.confirm_title"), t("bet.confirm_text", { amount: fmt(amount) }), t("bet.confirm_ok"));
+      return confirmSheet(t("bet.confirm_title"), t("bet.confirm_text", { amount: usd(amount) }), t("bet.confirm_ok"));
     }
     return true;
   }
   function showOutcome(el, bet, detail) {
     const win = bet.payout > 0;
     el.className = "result-line " + (win ? "win-c" : "lose-c");
-    el.innerHTML = (win ? `+${fmt(bet.payout)} ${STAR} <span class="muted small">${fmtX(bet.multiplier)}</span>` : `−${fmt(bet.amount)} ${STAR}`) +
+    el.innerHTML = (win ? `+${usd(bet.payout)} USDT <span class="muted small">${fmtX(bet.multiplier)}</span>` : `−${usd(bet.amount)} USDT`) +
       (detail ? ` <span class="muted small">· ${esc(detail)}</span>` : "");
     el.classList.remove("pop"); void el.offsetWidth; el.classList.add("pop");
     win ? fx.win() : fx.lose();
@@ -508,7 +556,7 @@
       `<div id="game-root"></div>`;
     bindBack(view);
     $("[data-info]", view).onclick = () => gameInfo(name);
-    ({ dice: gameDice, coinflip: gameCoin, limbo: gameLimbo, plinko: gamePlinko, mines: gameMines })[name]($("#game-root", view));
+    ({ dice: gameDice, coinflip: gameCoin, limbo: gameLimbo, plinko: gamePlinko, mines: gameMines, roulette: gameRoulette, crash: gameCrash })[name]($("#game-root", view));
   }
 
   async function playInstant(game, params, getAmount, btn) {
@@ -542,7 +590,7 @@
       const mult = Math.floor((rtp / chance) * 10000 + 1e-9) / 10000;
       $("#d-chance").textContent = (chance * 100).toFixed(0) + "%";
       $("#d-mult").textContent = fmtX(mult);
-      $("#d-pay").innerHTML = `${STAR}${fmt(Math.floor(S.bet * mult))}`;
+      $("#d-pay").innerHTML = `${CUR}${usd(Math.floor(S.bet * mult))}`;
       const z = $("#d-zone");
       z.style.left = dir === "under" ? "0" : target + "%";
       z.style.width = (dir === "under" ? target : 100 - target) + "%";
@@ -573,15 +621,15 @@
   // ---------------- Coinflip
   function gameCoin(root) {
     let side = "heads", rot = 0;
-    root.innerHTML = `<div class="stage"><div class="coin-wrap"><div class="coin" id="coin">
-        <div class="face">${esc(t("coin.heads_short"))}</div><div class="face back">${esc(t("coin.tails_short"))}</div></div></div>
-        <div class="seg"><button data-side="heads" class="on">${t("coin.heads")}</button><button data-side="tails">${t("coin.tails")}</button></div>
+    root.innerHTML = `<div class="stage"><div class="coin-wrap"><div class="coin" id="coin" role="img" aria-label="${esc(t("coin.heads"))} / ${esc(t("coin.tails"))}">
+        <div class="face front"></div><div class="face back"></div></div></div>
+        <div class="seg"><button data-side="heads" class="on">${img("coinflip/coin-heads")}${t("coin.heads")}</button><button data-side="tails">${img("coinflip/coin-tails")}${t("coin.tails")}</button></div>
         <div class="stats"><div class="stat"><div class="k">${t("game.chance")}</div><div class="v num">50%</div></div>
           <div class="stat"><div class="k">${t("game.multiplier")}</div><div class="v num" id="c-mult"></div></div>
           <div class="stat"><div class="k">${t("game.payout")}</div><div class="v num" id="c-pay"></div></div></div>
         <div class="result-line" id="c-res"></div></div>${betBox(t("coin.flip"))}`;
     const mult = Math.floor((1 - state.config.house_edge) * 2 * 10000 + 1e-9) / 10000;
-    const upd = () => { $("#c-mult").textContent = fmtX(mult); $("#c-pay").innerHTML = `${STAR}${fmt(Math.floor(S.bet * mult))}`; };
+    const upd = () => { $("#c-mult").textContent = fmtX(mult); $("#c-pay").innerHTML = `${CUR}${usd(Math.floor(S.bet * mult))}`; };
     $$("[data-side]", root).forEach((b) => (b.onclick = () => {
       fx.tap(); side = b.dataset.side;
       $$("[data-side]", root).forEach((x) => x.classList.toggle("on", x === b));
@@ -616,7 +664,7 @@
     const upd = () => {
       $("#l-chance").textContent = target >= 1.01 ? ((rtp / target) * 100).toFixed(2) + "%" : "—";
       $("#l-mult").textContent = fmtX(target);
-      $("#l-pay").innerHTML = `${STAR}${fmt(Math.floor(S.bet * target))}`;
+      $("#l-pay").innerHTML = `${CUR}${usd(Math.floor(S.bet * target))}`;
       $$("[data-t]", root).forEach((b) => b.classList.toggle("on", +b.dataset.t === target));
     };
     $("#l-target").oninput = (e) => { target = Math.floor(+e.target.value * 100) / 100 || 0; upd(); };
@@ -747,8 +795,8 @@
       const last = game?.picked?.[game.picked.length - 1];
       grid.innerHTML = Array.from({ length: 25 }, (_, i) => {
         let cls = "tile", txt = "";
-        if (revealed.has(i)) { cls += " safe"; txt = "💎"; }
-        else if (ms.has(i)) { cls += i === last && game.status === "lost" ? " boom" : " mine"; txt = "💣"; }
+        if (revealed.has(i)) { cls += " safe"; txt = img("mines/gem-emerald"); }
+        else if (ms.has(i)) { cls += i === last && game.status === "lost" ? " boom" : " mine"; txt = img("mines/mine"); }
         else if (game && !active) cls += " dim";
         return `<button class="${cls}" data-tile="${i}" ${active && !revealed.has(i) ? "" : "disabled"} aria-label="${i + 1}">${txt}</button>`;
       }).join("");
@@ -758,9 +806,9 @@
       $("#m-next").textContent = active && game.next_multiplier ? fmtX(game.next_multiplier) : "—";
       $("#m-left").textContent = game ? 25 - game.mines_count - n : "—";
       $("#m-count").disabled = active;
-      btn.textContent = active ? (n ? t("mines.cashout", { amount: fmt(Math.floor(game.amount * game.multiplier)) }) : t("mines.pick")) : t("mines.start");
+      btn.textContent = active ? (n ? t("mines.cashout", { amount: usd(Math.floor(game.amount * game.multiplier)) }) : t("mines.pick")) : t("mines.start");
       btn.disabled = active && !n;
-      btn.className = "btn xl block " + (active ? "moss" : "primary");
+      btn.className = "btn xl block " + (active ? "gold" : "primary");
     }
     async function reveal(tile) {
       fx.tap();
@@ -797,15 +845,16 @@
   // ---------------- Slots
   function renderSlot(view, id) {
     if (!SLOTS.includes(id)) return renderPlay(view);
-    const th = slotTheme(id);
+    const sym = SLOT_SYMBOLS[id];
     const cfg = slotCfg();
+    preload(sym);
     view.innerHTML = pageHead(t("slot." + id), { extra: `<button class="icon-btn" data-pay aria-label="${t("slot.paytable")}">${ic("info")}</button>` }) +
-      `<div class="stage"><div class="reels" id="reels">${Array.from({ length: 9 }, (_, i) => `<div class="cell" data-c="${i}">${th.symbols[[5, 4, 3, 2, 5, 1, 0, 3, 4][i]]}</div>`).join("")}</div>
-        <div class="stage-sub">${t("slot.lines_hint")}</div><div class="result-line" id="s-res"></div></div>${betBox(t("slot.spin"))}`;
+      `<div class="stage"><div class="reels-frame"><div class="reels" id="reels">${Array.from({ length: 9 }, (_, i) => `<div class="cell" data-c="${i}">${img(sym[[5, 4, 3, 2, 5, 1, 0, 3, 4][i]])}</div>`).join("")}</div></div>
+        <div class="stage-sub" style="margin-top:10px">${t("slot.lines_hint")}</div><div class="result-line" id="s-res"></div></div>${betBox(t("slot.spin"))}`;
     bindBack(view);
     $("[data-pay]", view).onclick = () => {
       openSheet(`<h2>${t("slot.paytable")}</h2><p class="muted small">${t("slot.paytable_note")}</p><div class="paytable">
-        ${th.symbols.map((g, i) => `<div><span class="g">${g}${g}${g}</span><b class="num">${fmtX(cfg.pays[i])}</b></div>`).reverse().join("")}</div>
+        ${sym.map((g, i) => `<div><span class="g">${img(g)}${img(g)}${img(g)}</span><b class="num">${fmtX(cfg.pays[i])}</b></div>`).reverse().join("")}</div>
         <p class="muted small" style="margin-top:12px">${t("game.rtp_note", { rtp: rtpText() })}</p>
         <div class="actions"><button class="btn primary" data-close>${t("common.ok")}</button></div>`);
       $("[data-close]").onclick = closeSheet;
@@ -813,6 +862,7 @@
     const getAmount = bindBetBox(view);
     const btn = $("[data-action]", view);
     const cells = $$(".cell", view);
+    const setCell = (c, k) => { c.firstElementChild.src = A(sym[k]); };
     btn.onclick = async () => {
       const res = await playInstant("slots", { slot: id }, getAmount, btn);
       if (!res) return;
@@ -828,20 +878,226 @@
             const el = performance.now() - t0;
             cells.forEach((c, i) => {
               const col = i % 3;
-              if (el < stopAt[col]) c.textContent = th.symbols[Math.floor(Math.random() * 6)];
-              else if (c.classList.contains("spin")) { c.classList.remove("spin"); c.textContent = th.symbols[grid[i]]; if (i >= 6) fx.tick(); }
+              if (el < stopAt[col]) setCell(c, Math.floor(Math.random() * 6));
+              else if (c.classList.contains("spin")) { c.classList.remove("spin"); setCell(c, grid[i]); if (i >= 6) fx.tick(); }
             });
             if (el >= stopAt[2]) { clearInterval(iv); done(); }
-          }, 60);
-          state.cleanup.push(() => clearInterval(iv));
+          }, 70);
+          state.cleanup.push(() => { clearInterval(iv); done(); });
         });
       }
-      cells.forEach((c, i) => { c.classList.remove("spin"); c.textContent = th.symbols[grid[i]]; });
+      cells.forEach((c, i) => { c.classList.remove("spin"); setCell(c, grid[i]); });
       res.result.wins.forEach((w) => cfg.lines[w.line].forEach((k) => cells[k].classList.add("win")));
       btn.disabled = false;
       setBalance(res.balance);
       showOutcome($("#s-res"), res.bet, res.result.wins.length ? t("slot.lines_won", { n: res.result.wins.length }) : "");
     };
+  }
+
+  // ---------------- Roulette (европейская)
+  const RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+  const rColor = (n) => (n === 0 ? "green" : RED.has(n) ? "red" : "black");
+  function gameRoulette(root) {
+    let bet = "red", rot = 0, spinning = false;
+    const last = state.rouletteLast || (state.rouletteLast = []);
+    const multOf = (b) => (typeof b === "number" || b === "zero" ? 36 : 2);
+    const chanceOf = (b) => (typeof b === "number" || b === "zero" ? 1 : 18) / 37;
+    root.innerHTML = `<div class="stage roulette-stage">
+        <div class="wheel-wrap"><img class="wheel" id="r-wheel" src="${A("roulette/wheel-top")}" alt="" draggable="false"><div class="r-ball num" id="r-ball" aria-live="polite">?</div></div>
+        <div class="r-last" id="r-last" aria-label="${esc(t("roulette.last"))}"></div>
+        <div class="result-line" id="r-res"></div></div>
+      <div class="r-bets" role="group" aria-label="${esc(t("roulette.your_bet"))}">
+        ${["red", "black", "zero", "even", "odd"].map((k) => `<button class="r-opt ${k}" data-bet="${k}"><span>${t("roulette." + k)}</span><b class="num">×${multOf(k)}</b></button>`).join("")}
+        <button class="r-opt pick" data-bet="num"><span id="r-num-label">${t("roulette.numbers")}</span><b class="num">×36</b></button></div>
+      <div class="stats" style="margin:0 0 12px"><div class="stat"><div class="k">${t("game.chance")}</div><div class="v num" id="r-ch"></div></div>
+        <div class="stat"><div class="k">${t("game.multiplier")}</div><div class="v num" id="r-mult"></div></div>
+        <div class="stat"><div class="k">${t("game.payout")}</div><div class="v num" id="r-pay"></div></div></div>
+      ${betBox(t("roulette.spin"))}`;
+    const paintLast = () => { $("#r-last").innerHTML = last.map((n) => `<span class="r-chip ${rColor(n)} num">${n}</span>`).join(""); };
+    const upd = () => {
+      $$("[data-bet]", root).forEach((b) => b.classList.toggle("on", b.dataset.bet === (typeof bet === "number" ? "num" : bet)));
+      $("#r-num-label").textContent = typeof bet === "number" ? t("roulette.number", { n: bet }) : t("roulette.numbers");
+      $("#r-ch").textContent = (chanceOf(bet) * 100).toLocaleString(locale(), { maximumFractionDigits: 1 }) + "%";
+      $("#r-mult").textContent = fmtX(multOf(bet));
+      $("#r-pay").innerHTML = `${CUR}${usd(S.bet * multOf(bet))}`;
+    };
+    const pickNumber = () => {
+      const sh = openSheet(`<h2>${t("roulette.numbers")}</h2><p class="muted small">${t("roulette.pick")}</p>
+        <div class="r-grid"><button class="r-n green zero ${bet === 0 ? "on" : ""}" data-n="0">0</button>${Array.from({ length: 36 }, (_, i) => i + 1)
+          .map((n) => `<button class="r-n ${rColor(n)} ${bet === n ? "on" : ""}" data-n="${n}">${n}</button>`).join("")}</div>`);
+      $$("[data-n]", sh).forEach((b) => (b.onclick = () => { fx.tap(); bet = +b.dataset.n; upd(); closeSheet(); }));
+    };
+    $$("[data-bet]", root).forEach((b) => (b.onclick = () => {
+      fx.tap();
+      if (b.dataset.bet === "num") return pickNumber();
+      bet = b.dataset.bet; upd();
+    }));
+    const getAmount = bindBetBox(root, upd);
+    paintLast(); upd();
+    const btn = $("[data-action]", root);
+    btn.onclick = async () => {
+      if (spinning) return;
+      const res = await playInstant("roulette", { bet }, getAmount, btn);
+      if (!res) return;
+      const n = res.result.number;
+      spinning = true; btn.disabled = true;
+      const ball = $("#r-ball");
+      ball.className = "r-ball num spin"; ball.textContent = "";
+      rot += 1440 + Math.floor(Math.random() * 360);
+      $("#r-wheel").style.transform = `rotate(${rot}deg)`;
+      if (S.motion) await sleep(2300);
+      if (!root.isConnected) return;
+      ball.className = "r-ball num pop " + rColor(n); ball.textContent = n;
+      last.unshift(n); last.splice(12); paintLast();
+      setBalance(res.balance);
+      showOutcome($("#r-res"), res.bet, t("roulette.landed", { n }));
+      spinning = false; btn.disabled = false;
+    };
+  }
+
+  // ---------------- Crash: время ведёт сервер, точку краха он не раскрывает до конца полёта
+  function gameCrash(root) {
+    const G = 0.18;
+    let round = null, offset = 0, raf = 0, poll = 0, finishing = false;
+    const hist = state.crashLast || (state.crashLast = []);
+    const auto = () => (S.crashAuto ? S.crashAuto : 0);
+    root.innerHTML = `<div class="stage crash-stage" id="cr-stage" style="background-image:url(${A("backgrounds/space-nebula")})">
+        <svg class="cr-graph" viewBox="0 0 320 200" preserveAspectRatio="none" aria-hidden="true"><path id="cr-area" class="area"/><path id="cr-line" class="line"/></svg>
+        <img class="cr-rocket" id="cr-rocket" src="${A("future/rocket")}" alt="" draggable="false">
+        <div class="cr-hud"><div class="cr-mult num" id="cr-mult" aria-live="off">1,00×</div><div class="cr-status" id="cr-status">${t("crash.ready")}</div></div></div>
+      <div class="cr-last" id="cr-last" aria-label="${esc(t("crash.last"))}"></div>
+      <div class="result-line" id="cr-res" style="margin:0 0 8px"></div>
+      <div class="panel cr-auto"><div class="cr-auto-row"><div class="grow"><div>${t("crash.auto")}</div><div class="sub">${t("crash.auto_sub")}</div></div>
+          <label class="field cr-auto-field ${auto() ? "" : "off"}"><input id="cr-auto" class="num" type="number" inputmode="decimal" step="0.1" min="1.01" max="1000" value="${(auto() || 2).toFixed(2)}" aria-label="${esc(t("crash.auto"))}"><span class="suffix">×</span></label>
+          <button class="switch ${auto() ? "on" : ""}" id="cr-auto-sw" role="switch" aria-checked="${!!auto()}" aria-label="${esc(t("crash.auto"))}"></button></div></div>
+      ${betBox(t("crash.launch"))}`;
+    const btn = $("[data-action]", root);
+    const getAmount = bindBetBox(root);
+    const now = () => Date.now() / 1000 + offset;
+    const sync = (serverNow) => { if (serverNow) offset = serverNow - Date.now() / 1000; };
+    const multAt = (el) => Math.max(1, Math.floor(Math.exp(Math.max(0, el) * G) * 100 + 1e-9) / 100);
+    const paintHist = () => { $("#cr-last").innerHTML = hist.map((x) => `<span class="cr-chip num ${x >= 2 ? "hi" : ""}">${fmtX(x)}</span>`).join(""); };
+
+    // ---- автовывод
+    const sw = $("#cr-auto-sw"), autoIn = $("#cr-auto"), autoField = $(".cr-auto-field", root);
+    const readAuto = () => { const v = clamp(Math.floor((+autoIn.value || 2) * 100) / 100, 1.01, 1000); autoIn.value = v.toFixed(2); return v; };
+    sw.onclick = () => {
+      fx.tap();
+      const on = !sw.classList.contains("on");
+      sw.classList.toggle("on", on); sw.setAttribute("aria-checked", on);
+      autoField.classList.toggle("off", !on);
+      S.crashAuto = on ? readAuto() : 0; saveSettings();
+    };
+    autoIn.addEventListener("change", () => { const v = readAuto(); if (sw.classList.contains("on")) { S.crashAuto = v; saveSettings(); } });
+
+    // ---- рисование
+    function paint(el, m, mode) {
+      const T = Math.max(6, el * 1.15), Y = Math.max(1.8, m * 1.12);
+      const pt = (tt) => [(tt / T) * 320, 196 - ((multAt(tt) - 1) / (Y - 1)) * 170];
+      const N = 36, pts = [];
+      for (let i = 0; i <= N; i++) pts.push(pt((el * i) / N));
+      const d = "M" + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(" L");
+      $("#cr-line").setAttribute("d", d);
+      $("#cr-area").setAttribute("d", `${d} L${pts[N][0].toFixed(1)} 200 L0 200 Z`);
+      const [x, y] = pts[N], [px, py] = pts[Math.max(0, N - 3)];
+      const ang = el > 0.05 ? (Math.atan2(y - py, x - px) * 180) / Math.PI + 45 : -45 + 0;
+      const r = $("#cr-rocket");
+      r.style.left = (x / 320) * 100 + "%"; r.style.top = (y / 200) * 100 + "%";
+      r.style.transform = `translate(-50%, -50%) rotate(${ang}deg)`;
+      $("#cr-mult").textContent = fmtX(m);
+      $("#cr-stage").dataset.mode = mode;
+    }
+    function idle() {
+      paint(0, 1, "idle");
+      $("#cr-status").textContent = t("crash.ready");
+      btn.textContent = t("crash.launch"); btn.className = "btn primary xl block"; btn.disabled = false;
+    }
+    function frame() {
+      if (!round) return;
+      const el = now() - round.started_at;
+      let m = multAt(el);
+      if (round.auto_target && m >= round.auto_target) m = round.auto_target; // дальше скажет сервер
+      paint(el, m, "fly");
+      btn.textContent = t("crash.cashout", { amount: usd(Math.floor(round.amount * m)) });
+      raf = requestAnimationFrame(frame);
+    }
+    function stop() { cancelAnimationFrame(raf); clearInterval(poll); raf = 0; poll = 0; }
+    state.cleanup.push(stop);
+
+    function fly(r) {
+      round = r;
+      $("#cr-status").textContent = t("crash.flying");
+      $("#cr-res").className = "result-line"; $("#cr-res").textContent = round.max_multiplier < 1000 ? t("crash.cap", { x: fmtX(round.max_multiplier) }) : "";
+      btn.className = "btn gold xl block"; btn.disabled = false;
+      stop();
+      raf = requestAnimationFrame(frame);
+      poll = setInterval(check, 450);
+    }
+    async function check() {
+      if (!round || finishing) return;
+      try {
+        const a = await api("/api/games/crash/active");
+        sync(a.server_now);
+        if (a.game && a.game.status === "active") return;
+        const bet = await api(`/api/bets/${round.bet_id}`);
+        finish({ status: bet.status, amount: bet.amount, payout: bet.payout, multiplier: bet.multiplier,
+                 crash_point: bet.result.crash_point, cashout: bet.result.cashout }, bet);
+        loadMe().catch(() => {});
+      } catch { /* сеть моргнула — спросим ещё раз */ }
+    }
+    function finish(v, bet, balance) {
+      stop();
+      const started = round?.started_at;
+      round = null; finishing = false;
+      const won = v.status === "won";
+      const endM = won ? v.multiplier : v.crash_point;
+      paint(started ? Math.log(Math.max(1, endM)) / G : 0, endM, won ? "won" : "lost");
+      $("#cr-mult").textContent = fmtX(endM);
+      $("#cr-status").textContent = won ? t(v.cashout === "auto" ? "crash.auto_cashed" : "crash.cashed", { x: fmtX(v.multiplier) }) + " · " + t("crash.ended", { x: fmtX(v.crash_point) })
+                                        : t("crash.ended", { x: fmtX(v.crash_point) });
+      hist.unshift(v.crash_point); hist.splice(10); paintHist();
+      if (balance != null) setBalance(balance);
+      showOutcome($("#cr-res"), { payout: v.payout, amount: v.amount, multiplier: v.multiplier }, "");
+      btn.textContent = t("crash.launch"); btn.className = "btn primary xl block"; btn.disabled = false;
+    }
+
+    btn.onclick = async () => {
+      if (round) {
+        finishing = true; btn.disabled = true;
+        let res;
+        try { res = await api("/api/games/crash/cashout", {}); } catch (e) {
+          finishing = false; btn.disabled = false;
+          if (e.code === "no_active_game") return check(); // раунд уже досчитан сервером
+          toast(errText(e)); fx.error(); return;
+        }
+        finishing = false;
+        const r = res.result;
+        return finish({ status: r.status, amount: r.amount, payout: r.payout, multiplier: r.multiplier, crash_point: r.crash_point, cashout: r.cashout }, res.bet, res.balance);
+      }
+      const amount = getAmount();
+      if (!(await preBet(amount))) return;
+      const params = sw.classList.contains("on") ? { auto_cashout: readAuto() } : {};
+      btn.disabled = true;
+      const res = await guard(() => api("/api/games/crash/start", { amount, params }));
+      btn.disabled = false;
+      if (!res) return;
+      setBalance(res.balance);
+      state.me && (state.me.total_wagered += amount);
+      sync(res.result.server_now);
+      fx.tap();
+      if (res.result.status !== "active") {
+        const r = res.result;
+        return finish({ status: r.status, amount: r.amount, payout: r.payout, multiplier: r.multiplier, crash_point: r.crash_point, cashout: r.cashout }, res.bet);
+      }
+      fly(res.result);
+    };
+
+    paintHist(); idle();
+    guard(async () => {
+      const a = await api("/api/games/crash/active");
+      sync(a.server_now);
+      if (a.game && root.isConnected) { toast(t("crash.resumed")); fly(a.game); }
+    });
   }
 
   // ================================================================ CHAT
@@ -855,7 +1111,7 @@
     let lastId = 0, myId = state.me?.public_id;
     const near = () => box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     function msgHtml(m) {
-      if (m.kind === "win") return `<div class="sysmsg">${STAR}${esc(t("chat.win", { name: m.user.nickname, amount: fmt(m.amount), game: m.game }))}</div>`;
+      if (m.kind === "win") return `<div class="sysmsg">${CUR}${esc(t("chat.win", { name: m.user.nickname, amount: usd(m.amount), game: m.game }))}</div>`;
       const mine = m.user.public_id === myId;
       return `<div class="msg ${mine ? "me" : ""}">${avatar(m.user)}<div class="bubble">
         <div class="who">${esc(m.user.nickname)}${m.user.vip_level ? vipBadge(m.user.vip_level) : ""}</div>
@@ -895,11 +1151,13 @@
   function avatar(u, cls = "") {
     const photo = u.photo_url;
     const letter = esc((u.nickname || "?").trim().charAt(0).toUpperCase());
-    const hues = ["#36703f", "#2f6a5a", "#4f7d2f", "#2c5e3a", "#5a7a2a"];
+    const hues = ["#1c3b8f", "#2a4fb3", "#1f3f78", "#3359c4", "#274a9e"];
     const bg = hues[(u.public_id || 0) % hues.length];
     return `<span class="avatar ${cls}" style="background:${bg}">${photo ? `<img src="${esc(photo)}" alt="">` : letter}</span>`;
   }
-  const vipBadge = (lvl) => `<span class="vip-badge l${lvl}">${ic("crown").replace('class="i"', 'class="i" style="width:11px;height:11px"')}${esc(t("vip." + (state.config?.vip_levels?.[lvl]?.key || "novice")))}</span>`;
+  const vipKey = (lvl) => state.config?.vip_levels?.[lvl]?.key || "bronze";
+  const vipBadge = (lvl, big = false) => `<span class="vip-badge l${lvl}${big ? " big" : ""}">${img(VIP_IMG[lvl] || VIP_IMG[0])}${esc(t("vip." + vipKey(lvl)))}</span>`;
+  const vipMedal = (lvl) => img(VIP_IMG[lvl] || VIP_IMG[0], "vip-medal", t("vip." + vipKey(lvl)));
 
   // ================================================================ PROFILE
   async function loadMe() { state.me = await api("/api/me"); setBalance(state.me.balance); return state.me; }
@@ -934,7 +1192,8 @@
       $("#prof").innerHTML = `
         <div class="profile-top">${avatar(u, "xl")}
           <div class="nick"><span id="nick">${esc(me.nickname)}</span><button id="nick-edit" aria-label="${t("profile.edit_nick")}">${ic("pen")}</button></div>
-          ${vipBadge(vip.level)}</div>
+          ${vipBadge(vip.level, true)}</div>
+        <div id="bonus-slot"></div>
 
         <div class="group"><ul class="list">
           <li class="row"><div class="grow"><div class="sub">${t("profile.id")}</div><div class="num">${me.public_id}</div></div>
@@ -944,13 +1203,13 @@
         </ul></div>
 
         <div class="panel"><div class="sub muted small">${t("profile.balance")}</div>
-          <div class="balance-big num">${STAR}${S.hideBalance ? "•••" : fmt(me.balance)}</div>
+          <div class="balance-big num">${CUR}${S.hideBalance ? "•••" : usd(me.balance)}</div>
           <div class="actions" style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" style="flex:1" data-go="wallet">${ic("plus")}${t("wallet.deposit")}</button>
             <button class="btn ghost" style="flex:1" data-go="wallet/withdraw">${ic("up")}${t("wallet.withdraw")}</button></div></div>
 
-        <div class="panel"><h3 style="display:flex;justify-content:space-between">${t("profile.privileges")}<span class="vip-badge l${vip.level}">${esc(t("vip." + vip.key))}</span></h3>
+        <div class="panel"><h3 style="display:flex;justify-content:space-between;align-items:center">${t("profile.privileges")}${vipBadge(vip.level)}</h3>
           <div class="progress"><i style="width:${pct.toFixed(1)}%"></i></div>
-          <div class="levels"><span>${esc(t("vip." + vip.key))}</span><span>${next ? t("vip.to_next", { amount: fmt(next - vip.wagered), name: t("vip." + vip.next_key) }) : t("vip.max")}</span></div>
+          <div class="levels"><span>${esc(t("vip." + vip.key))}</span><span>${next ? t("vip.to_next", { amount: usd(next - vip.wagered), name: t("vip." + vip.next_key) }) : t("vip.max")}</span></div>
           <ul class="perks">${perks(vip.level).map((p) => `<li class="${p.on ? "" : "locked"}">${ic(p.on ? "check" : "lock")}${esc(p.text)}</li>`).join("")}</ul>
           <button class="btn ghost sm" style="margin-top:12px" id="vip-all">${t("vip.all_levels")}</button></div>
 
@@ -958,30 +1217,83 @@
           <p class="muted small" style="margin:0 0 10px">${t("ref.text", { pct: me.referral.percent })}</p>
           <label class="field"><input value="${esc(me.referral.link)}" readonly style="font-weight:500;font-size:14px"></label>
           <div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost" style="flex:1" data-copy="${esc(me.referral.link)}">${ic("copy")}${t("common.copy")}</button>
-            <button class="btn moss" style="flex:1" id="ref-share">${ic("share")}${t("ref.share")}</button></div>
+            <button class="btn deep" style="flex:1" id="ref-share">${ic("share")}${t("ref.share")}</button></div>
           <div class="stats" style="grid-template-columns:repeat(2,1fr)"><div class="stat"><div class="k">${t("ref.invited")}</div><div class="v num">${fmt(me.referral.invited)}</div></div>
-            <div class="stat"><div class="k">${t("ref.earned")}</div><div class="v num">${STAR}${fmt(me.referral.earned)}</div></div></div></div>
+            <div class="stat"><div class="k">${t("ref.earned")}</div><div class="v num">${CUR}${usd(me.referral.earned)}</div></div></div></div>
 
         <div class="group" style="margin-top:12px"><ul class="list">
-          ${[["history", "clock"], ["txs", "list"], ["fair", "shield"]].map(([r, i]) =>
+          ${[["leaders", "trophy"], ["history", "clock"], ["txs", "list"], ["fair", "shield"]].map(([r, i]) =>
             `<li><button class="row" data-go="${r}">${ic(i)}<span class="grow">${t("profile." + r)}</span>${ic("chev", "i chev")}</button></li>`).join("")}
         </ul></div>`;
       $$("[data-copy]", view).forEach((b) => (b.onclick = () => copy(b.dataset.copy)));
       $$("[data-go]", view).forEach((b) => (b.onclick = () => { fx.tap(); go(b.dataset.go); }));
       $("#nick-edit").onclick = editNick;
+      paintBonus($("#bonus-slot", view), me);
       $("#ref-share").onclick = () => {
         const url = `https://t.me/share/url?url=${encodeURIComponent(me.referral.link)}&text=${encodeURIComponent(t("ref.share_text"))}`;
         if (tg?.openTelegramLink && tg.initData) tg.openTelegramLink(url); else copy(me.referral.link);
       };
       $("#vip-all").onclick = () => {
         const sh = openSheet(`<h2>${t("profile.privileges")}</h2><ul class="list">${levels.map((l) => `
-          <li class="row"><span class="vip-badge l${l.level}">${esc(t("vip." + l.key))}</span><span class="grow small muted">${t("vip.from", { amount: fmt(l.min) })}</span>
+          <li class="row">${vipBadge(l.level)}<span class="grow small muted">${t("vip.from", { amount: usd(l.min) })}</span>
           <span class="small">${l.cashback ? t("vip.perk.cashback", { n: l.cashback }) : "—"}</span></li>`).join("")}</ul>
           <div class="actions"><button class="btn primary" data-close>${t("common.ok")}</button></div>`);
         $("[data-close]", sh).onclick = closeSheet;
       };
     }
   }
+  // ---------------- ежедневный бонус (если включён на сервере)
+  function paintBonus(el, me) {
+    const b = me.bonus;
+    if (!el || !b?.enabled) { if (el) el.innerHTML = ""; return; }
+    const left = b.next_at ? Math.max(0, new Date(b.next_at) - Date.now()) : 0;
+    const hhmm = `${Math.floor(left / 3600e3)}:${String(Math.floor((left % 3600e3) / 60e3)).padStart(2, "0")}`;
+    el.innerHTML = `<div class="bonus-card">${img("shared/gift-sapphire")}<div class="grow"><b>${t("bonus.title")}</b>
+      <div class="small muted">${t("bonus.text", { amount: usd(b.amount) })}</div>
+      ${b.available ? `<button class="btn gold sm" id="bonus-claim">${t("bonus.claim", { amount: usd(b.amount) })}</button>`
+        : `<div class="small bonus-next">${t("bonus.next", { time: hhmm })}</div>`}</div></div>`;
+    const btn = $("#bonus-claim", el);
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true;
+      const r = await guard(() => api("/api/bonus/claim", {}));
+      if (!r) { btn.disabled = false; return; }
+      fx.win(); toast(t("bonus.done", { amount: usd(r.amount) }));
+      setBalance(r.balance);
+      state.me = { ...state.me, balance: r.balance, bonus: r.bonus };
+      paintBonus(el, state.me);
+    };
+  }
+
+  // ================================================================ LEADERBOARD
+  function renderLeaders(view) {
+    let period = "week";
+    view.innerHTML = pageHead(t("leaders.title")) + `<div class="lb-hero">${img("shared/trophy")}<div><div class="muted small">${t("leaders.hint")}</div>
+        <div class="seg" id="lb-seg"><button data-p="week" class="on">${t("leaders.week")}</button><button data-p="all">${t("leaders.all")}</button></div></div></div>
+      <div class="lb-me" id="lb-me"></div>
+      <div class="group"><ul class="list" id="lb-list"><li class="empty">${t("common.loading")}</li></ul></div>`;
+    bindBack(view);
+    const MEDAL = ["shared/medal-gold", "shared/medal-silver", "shared/medal-bronze"];
+    const load = () => guard(async () => {
+      const lb = await api("/api/leaderboard?period=" + period);
+      if (!$("#lb-list", view)) return;
+      const mine = state.me?.public_id;
+      $("#lb-list", view).innerHTML = lb.top.length ? lb.top.map((e) => `<li class="row lb-row${e.public_id === mine ? " me" : ""}">
+          <span class="lb-rank num">${e.rank <= 3 ? img(MEDAL[e.rank - 1], "", "#" + e.rank) : e.rank}</span>${avatar(e)}
+          <div class="grow"><div class="lb-name"><span>${esc(e.nickname)}</span>${vipMedal(e.vip_level)}</div>
+            <div class="sub">${e.best_win ? t("leaders.best", { amount: usd(e.best_win) }) : "&nbsp;"}</div></div>
+          <b class="num lb-sum">${CUR}${usd(e.wagered)}</b></li>`).join("")
+        : `<li class="empty">${t("leaders.empty")}</li>`;
+      $("#lb-me", view).innerHTML = lb.me ? `<b>${t("leaders.you", { rank: lb.me.rank })}</b><span class="num">${CUR}${usd(lb.me.wagered)}</span>`
+        : `<span class="muted">${t("leaders.you_none")}</span>`;
+    });
+    $$("#lb-seg button", view).forEach((b) => (b.onclick = () => {
+      fx.tap(); period = b.dataset.p;
+      $$("#lb-seg button", view).forEach((x) => x.classList.toggle("on", x === b));
+      load();
+    }));
+    load();
+  }
+
   function editNick() {
     const sh = openSheet(`<h2>${t("profile.edit_nick")}</h2><form id="nick-form"><label class="field"><input id="nick-in" maxlength="20" value="${esc(state.me.nickname)}"></label>
       <p class="muted small">${t("profile.nick_rules")}</p><div class="actions"><button type="button" class="btn ghost" data-close>${t("common.cancel")}</button>
@@ -1009,70 +1321,110 @@
     }));
     tab === "deposit" ? walletDeposit($("#w-body")) : walletWithdraw($("#w-body"));
   }
+  // ---------------- пополнение: USDT в сети TON на адрес казино, ID игрока — в комментарии
   function walletDeposit(root) {
-    const d = state.config.deposit;
-    let amount = d.presets[1] || d.min;
-    root.innerHTML = `<div class="panel"><div class="chips" style="grid-template-columns:repeat(3,1fr)">${d.presets.map((p) =>
-        `<button data-p="${p}" class="${p === amount ? "on" : ""}" style="height:44px;font-size:15px">${STAR} ${fmt(p)}</button>`).join("")}</div>
-      <div class="ctrl-label" style="margin-top:14px"><span>${t("wallet.other_amount")}</span><span>${t("wallet.range", { min: d.min, max: fmt(d.max) })}</span></div>
-      <label class="field">${STAR}<input id="dep-in" class="num" type="number" inputmode="numeric" value="${amount}"></label>
-      <button class="btn primary xl block" style="margin-top:12px" id="dep-btn">${t("wallet.pay", { amount: fmt(amount) })}</button>
-      <p class="muted small" style="margin:10px 0 0">${t("wallet.stars_note")}</p>
-      ${S.depositLimit ? `<p class="muted small" style="margin:6px 0 0">${t("rg.limit_note", { amount: fmt(S.depositLimit) })}</p>` : ""}</div>`;
-    const inp = $("#dep-in"), btn = $("#dep-btn");
-    const upd = () => { btn.textContent = t("wallet.pay", { amount: fmt(amount) }); $$("[data-p]", root).forEach((b) => b.classList.toggle("on", +b.dataset.p === amount)); };
-    $$("[data-p]", root).forEach((b) => (b.onclick = () => { fx.tap(); amount = +b.dataset.p; inp.value = amount; upd(); }));
-    inp.oninput = () => { amount = Math.round(+inp.value) || 0; upd(); };
-    btn.onclick = () => guard(async () => {
-      if (S.pauseUntil > Date.now()) { toast(t("rg.paused_short")); return; }
-      if (S.depositLimit) {
-        const txs = await api("/api/wallet/transactions?limit=100");
-        const day = Date.now() - 864e5;
-        const sum = txs.filter((x) => x.kind === "deposit" && Date.parse(x.created_at) > day).reduce((a, x) => a + x.amount, 0);
-        if (sum + amount > S.depositLimit) { toast(t("rg.limit_hit", { left: fmt(Math.max(0, S.depositLimit - sum)) })); fx.error(); return; }
+    root.innerHTML = `<div class="empty">${t("common.loading")}</div>`;
+    guard(async () => {
+      const [d, txs] = await Promise.all([api("/api/wallet/deposit"), S.depositLimit ? api("/api/wallet/transactions?limit=100") : []]);
+      if (!d.enabled) { root.innerHTML = `<div class="panel"><p style="margin:0">${t("dep.disabled")}</p></div>`; return; }
+      const day = Date.now() - 864e5;
+      const today = txs.filter((x) => x.kind === "deposit" && Date.parse(x.created_at) > day).reduce((a, x) => a + x.amount, 0);
+      const overLimit = S.depositLimit && today >= S.depositLimit;
+      const paused = S.pauseUntil > Date.now();
+      const copyRow = (label, value, id) => `<div class="dep-row"><div class="grow"><div class="dep-k">${label}</div>
+          <div class="dep-v num" id="${id}">${esc(value)}</div></div>
+          <button class="btn ghost sm" data-copy="${id}">${ic("copy")}${t("common.copy")}</button></div>`;
+      root.innerHTML = `<div class="panel dep">
+          <div class="dep-head">${CUR}<div><b>${t("dep.title")}</b><div class="muted small">${t("dep.sub")}</div></div></div>
+          <ol class="dep-steps">
+            <li>${copyRow(t("dep.address"), d.address, "dep-addr")}</li>
+            <li>${copyRow(t("dep.memo"), d.memo, "dep-memo")}<p class="dep-warn">${t("dep.memo_warn")}</p></li>
+            <li><div class="dep-k">${t("dep.send")}</div>
+              <div class="dep-btns"><button class="btn primary" id="dep-tk">${t("dep.open_tonkeeper")}</button>
+                <button class="btn ghost" id="dep-ton">${t("dep.open_wallet")}</button></div></li>
+          </ol>
+          <p class="muted small" style="margin:12px 0 0">${t("dep.note", { min: usd(d.min) })}</p>
+          ${S.depositLimit ? `<p class="muted small" style="margin:6px 0 0">${t("rg.limit_note", { amount: usd(S.depositLimit) })}</p>` : ""}
+          <button class="btn deep block" style="margin-top:14px" id="dep-sent">${t("dep.sent")}</button>
+          ${DEMO ? `<button class="btn ghost block" style="margin-top:8px" id="dep-demo">${t("dep.demo")}</button>` : ""}</div>
+        <div class="dep-wait" id="dep-wait" hidden><span class="spinner"></span><span>${t("dep.waiting")}</span></div>`;
+      if (paused || overLimit) {
+        const body = $(".dep", root);
+        body.classList.add("blocked");
+        body.insertAdjacentHTML("afterbegin", `<div class="dep-block">${paused ? t("rg.paused_short")
+          : t("rg.limit_reached", { amount: usd(S.depositLimit) })}</div>`);
       }
-      const { invoice_id, invoice_link } = await api("/api/wallet/invoice", { amount });
-      if (DEMO) return demoInvoice(invoice_id, amount);
-      if (!tg?.openInvoice) return toast(t("wallet.only_tg"));
-      tg.openInvoice(invoice_link, (status) => {
-        if (status === "paid") { toast(t("wallet.paid")); fx.win(); setTimeout(() => guard(loadMe), 1500); }
-        else if (status === "failed") toast(t("wallet.failed"));
-      });
+      $$("[data-copy]", root).forEach((b) => (b.onclick = () => { fx.tap(); copy($("#" + b.dataset.copy).textContent); }));
+      const open = (url) => { fx.tap(); if (tg?.openLink && url.startsWith("https://")) tg.openLink(url); else location.href = url; };
+      $("#dep-tk").onclick = () => open(d.links.tonkeeper);
+      $("#dep-ton").onclick = () => open(d.links.ton);
+      // «Я отправил» — ждём зачисления: баланс обновится сам, как только перевод появится в сети
+      $("#dep-sent").onclick = () => {
+        fx.tap();
+        const start = state.me?.balance ?? 0;
+        $("#dep-wait").hidden = false;
+        $("#dep-sent").disabled = true;
+        let n = 0;
+        const iv = setInterval(() => guard(async () => {
+          const me = await loadMe();
+          if (me.balance > start) { clearInterval(iv); fx.win(); toast(t("dep.credited", { amount: usd(me.balance - start) })); walletDeposit(root); }
+          else if (++n > 60) { clearInterval(iv); $("#dep-wait").innerHTML = `<span>${t("dep.slow")}</span>`; $("#dep-sent").disabled = false; }
+        }), 5000);
+        state.cleanup.push(() => clearInterval(iv));
+      };
+      const demoBtn = $("#dep-demo");
+      if (demoBtn) demoBtn.onclick = () => demoDeposit(root, d);
     });
   }
-  function demoInvoice(invoiceId, amount) {
-    const sh = openSheet(`<p class="muted small center" style="margin:0">${t("wallet.demo_invoice")}</p>
-      <div class="balance-big num" style="justify-content:center;margin:12px 0">${STAR}${fmt(amount)}</div>
-      <div class="actions"><button class="btn ghost" data-a="no">${t("common.cancel")}</button><button class="btn primary" data-a="yes">${t("wallet.pay", { amount: fmt(amount) })}</button></div>`);
-    $('[data-a="no"]', sh).onclick = () => { closeSheet(); toast(t("wallet.cancelled")); };
+  // в демо перевода в сети нет — имитируем его
+  function demoDeposit(root, d) {
+    let amount = d.presets[1] || 10 * U;
+    const sh = openSheet(`<h2>${t("dep.demo_title")}</h2><p class="muted small">${t("dep.demo_text", { memo: d.memo })}</p>
+      <div class="chips" style="grid-template-columns:repeat(3,1fr)">${d.presets.map((p) =>
+        `<button data-p="${p}" class="${p === amount ? "on" : ""}" style="height:44px;font-size:15px">${usd(p)}</button>`).join("")}</div>
+      <div class="actions"><button class="btn ghost" data-a="no">${t("common.cancel")}</button><button class="btn primary" data-a="yes">${t("dep.demo_send")}</button></div>`);
+    $$("[data-p]", sh).forEach((b) => (b.onclick = () => { fx.tap(); amount = +b.dataset.p; $$("[data-p]", sh).forEach((x) => x.classList.toggle("on", x === b)); }));
+    $('[data-a="no"]', sh).onclick = closeSheet;
     $('[data-a="yes"]', sh).onclick = () => guard(async () => {
-      await api("/demo/pay", { invoice_id: invoiceId });
-      closeSheet(); fx.win(); toast(t("wallet.credited", { amount: fmt(amount) }));
-      await loadMe();
+      await api("/demo/deposit", { amount, comment: d.memo });
+      closeSheet(); fx.win(); toast(t("dep.credited", { amount: usd(amount) }));
+      await loadMe(); walletDeposit(root);
     });
   }
+  // ---------------- вывод: USDT на свой кошелёк TON, отправляет администратор
   function walletWithdraw(root) {
     root.innerHTML = `<div class="empty">${t("common.loading")}</div>`;
     guard(async () => {
       const me = await loadMe();
       const w = state.config.withdraw;
       const wds = await api("/api/wallet/withdrawals");
-      const need = Math.floor(me.total_deposited * w.wager_ratio);
+      const need = Math.floor((me.total_deposited + (me.total_bonus || 0)) * w.wager_ratio);
       const pct = need ? Math.min(100, (me.total_wagered / need) * 100) : 100;
+      const savedAddr = (() => { try { return localStorage.getItem("ara-wd-address") || ""; } catch { return ""; } })();
       root.innerHTML = `<div class="panel"><div class="muted small">${t("wallet.available")}</div>
-          <div class="balance-big num">${STAR}${fmt(me.balance)}</div>
-          ${me.wager_left ? `<div style="margin-top:12px"><div class="ctrl-label"><span>${t("wallet.wager")}</span><span class="num">${fmt(me.total_wagered)} / ${fmt(need)}</span></div>
-            <div class="progress"><i style="width:${pct.toFixed(1)}%"></i></div><p class="muted small" style="margin:6px 0 0">${t("wallet.wager_left", { amount: fmt(me.wager_left) })}</p></div>` : ""}
-          <div class="ctrl-label" style="margin-top:14px"><span>${t("wallet.amount")}</span><span>${t("wallet.range", { min: w.min, max: fmt(w.max) })}</span></div>
-          <label class="field">${STAR}<input id="wd-in" class="num" type="number" inputmode="numeric" placeholder="${w.min}"></label>
+          <div class="balance-big num">${CUR}${usd(me.balance)}</div>
+          ${me.wager_left ? `<div style="margin-top:12px"><div class="ctrl-label"><span>${t("wallet.wager")}</span><span class="num">${usd(me.total_wagered)} / ${usd(need)}</span></div>
+            <div class="progress"><i style="width:${pct.toFixed(1)}%"></i></div><p class="muted small" style="margin:6px 0 0">${t("wallet.wager_left", { amount: usd(me.wager_left) })}</p></div>` : ""}
+          <div class="ctrl-label" style="margin-top:14px"><span>${t("wallet.amount")}</span><span>${t("wallet.range", { min: usd(w.min), max: usd(w.max) })}</span></div>
+          <div class="wd-amount"><label class="field">${CUR}<input id="wd-in" class="num" type="text" inputmode="decimal" autocomplete="off" placeholder="${usd(w.min)}" aria-label="${esc(t("wallet.amount"))}"><span class="suffix">USDT</span></label>
+            <button class="btn ghost" id="wd-max">${t("bet.max")}</button></div>
+          <div class="ctrl-label" style="margin-top:14px"><span>${t("wd.address")}</span><span>${t("wd.network")}</span></div>
+          <label class="field addr"><input id="wd-addr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="UQ…" value="${esc(savedAddr)}" aria-label="${esc(t("wd.address"))}"></label>
+          <p class="muted small" style="margin:6px 0 0">${t("wd.address_hint")}${w.fee ? " " + t("wd.fee", { fee: usd(w.fee) }) : ""}</p>
           <button class="btn primary xl block" style="margin-top:12px" id="wd-btn">${t("wallet.withdraw_btn")}</button>
           <p class="muted small" style="margin:10px 0 0">${t(DEMO ? "wallet.demo_withdraw" : "wallet.withdraw_note")}</p></div>
         <h3 style="margin:18px 0 8px">${t("wallet.requests")}</h3>
-        <div class="group"><ul class="list">${wds.length ? wds.map((x) => `<li class="row"><div class="grow"><div>${t("wallet.request_n", { id: x.id })} · <span class="num">${fmt(x.amount)}</span> ${STAR}</div>
-          <div class="sub">${fmtDate(x.created_at)}</div></div><span class="small">${t("wd." + x.status)}</span></li>`).join("") : `<li class="empty">${t("wallet.no_requests")}</li>`}</ul></div>`;
+        <div class="group"><ul class="list">${wds.length ? wds.map((x) => `<li class="row"><div class="grow"><div>${t("wallet.request_n", { id: x.id })} · <span class="num">${usd(x.amount)}</span> USDT</div>
+          <div class="sub num">${fmtDate(x.created_at)}${x.address ? " · " + esc(x.address.slice(0, 6) + "…" + x.address.slice(-4)) : ""}</div></div><span class="small">${t("wd." + x.status)}</span></li>`).join("") : `<li class="empty">${t("wallet.no_requests")}</li>`}</ul></div>`;
+      $("#wd-max").onclick = () => { fx.tap(); $("#wd-in").value = String(Math.min(me.balance, w.max) / U); };
       $("#wd-btn").onclick = () => guard(async () => {
-        const amount = Math.round(+$("#wd-in").value);
-        const res = await api("/api/wallet/withdraw", { amount });
+        const amount = toUnits($("#wd-in").value);
+        const address = $("#wd-addr").value.trim();
+        if (!address) { toast(t("wd.need_address")); fx.error(); return; }
+        const ok = await confirmSheet(t("wd.confirm_title"), t("wd.confirm_text", { amount: usd(amount - (w.fee || 0)), address: address.slice(0, 8) + "…" + address.slice(-6) }), t("wd.confirm_ok"));
+        if (!ok) return;
+        const res = await api("/api/wallet/withdraw", { amount, address });
+        try { localStorage.setItem("ara-wd-address", address); } catch { /* приватный режим */ }
         toast(t("wallet.request_created", { id: res.id }));
         walletWithdraw(root);
         if (DEMO) { const tm = setTimeout(() => state.route === "wallet/withdraw" && walletWithdraw(root), 5600); state.cleanup.push(() => clearTimeout(tm)); }
@@ -1089,7 +1441,7 @@
       state.bets = Object.fromEntries(bets.map((b) => [b.id, b]));
       $("#h-list").innerHTML = bets.length ? bets.map((b) => `<li><button class="row" data-bet="${b.id}"><div class="grow">
         <div>${esc(gameTitle(b))} <span class="muted small">#${b.id}</span></div><div class="sub">${fmtDate(b.created_at)} · ${fmt(b.amount)} ⭐</div></div>
-        <b class="num ${b.payout > 0 ? "win-c" : "lose-c"}">${b.payout > 0 ? "+" + fmt(b.payout) : "−" + fmt(b.amount)}</b></button></li>`).join("")
+        <b class="num ${b.payout > 0 ? "win-c" : "lose-c"}">${b.payout > 0 ? "+" + usd(b.payout) : "−" + usd(b.amount)}</b></button></li>`).join("")
         : `<li class="empty">${t("history.empty")}</li>`;
       $$("[data-bet]", view).forEach((b) => (b.onclick = () => showBet(state.bets[b.dataset.bet])));
     });
@@ -1112,7 +1464,9 @@
     await guard(async () => {
       const v = await api("/api/fair/verify", { game: b.game, server_seed: b.server_seed, client_seed: b.client_seed, nonce: b.nonce, params: b.params });
       const hashOk = v.server_seed_hash === b.server_seed_hash;
-      const outOk = b.game === "mines" ? JSON.stringify(v.mines) === JSON.stringify(b.result?.mines) : Math.abs(v.multiplier - b.multiplier) < 1e-9;
+      const outOk = b.game === "mines" ? JSON.stringify(v.mines) === JSON.stringify(b.result?.mines)
+        : b.game === "crash" ? v.crash_point === b.result?.crash_point
+        : Math.abs(v.multiplier - b.multiplier) < 1e-9;
       const sh = openSheet(`<h2>${t("bet.verify_title", { id: b.id })}</h2>
         <p class="${hashOk ? "win-c" : "lose-c"}">${hashOk ? "✓" : "✗"} ${t("bet.verify_hash")}</p>
         <p class="${outOk ? "win-c" : "lose-c"}">${outOk ? "✓" : "✗"} ${t("bet.verify_outcome")}</p>
@@ -1126,7 +1480,7 @@
     guard(async () => {
       const txs = await api("/api/wallet/transactions?limit=100");
       $("#t-list").innerHTML = txs.length ? txs.map((x) => `<li class="row"><div class="grow"><div>${t("tx." + x.kind)}</div><div class="sub">${fmtDate(x.created_at)}</div></div>
-        <b class="num ${x.amount > 0 ? "win-c" : ""}">${x.amount > 0 ? "+" : "−"}${fmt(Math.abs(x.amount))}</b></li>`).join("") : `<li class="empty">${t("history.empty")}</li>`;
+        <b class="num ${x.amount > 0 ? "win-c" : ""}">${x.amount > 0 ? "+" : "−"}${usd(Math.abs(x.amount))}</b></li>`).join("") : `<li class="empty">${t("history.empty")}</li>`;
     });
   }
   function renderFair(view) {
@@ -1163,18 +1517,18 @@
       <div class="group-title">${t("settings.app")}</div><div class="group"><ul class="list">
         ${["sound", "haptics", "motion", "hideBalance"].map((k) => `<li class="row"><div class="grow"><div>${t("settings." + k)}</div><div class="sub">${t("settings." + k + ".sub")}</div></div>${sw(k)}</li>`).join("")}
         <li class="row"><div class="grow"><div>${t("settings.confirmAbove")}</div><div class="sub">${t("settings.confirmAbove.sub")}</div></div>
-          ${sel("confirmAbove", [[0, t("settings.off")], [500, "500"], [1000, "1 000"], [5000, "5 000"]])}</li></ul></div>
+          ${sel("confirmAbove", [[0, t("settings.off")], [10 * U, "10 USDT"], [50 * U, "50 USDT"], [100 * U, "100 USDT"]])}</li></ul></div>
 
       <div class="group-title">${t("settings.rg")}</div><div class="group"><ul class="list">
         <li class="row"><div class="grow"><div>${t("settings.depositLimit")}</div><div class="sub">${t("settings.depositLimit.sub")}</div></div>
-          ${sel("depositLimit", [[0, t("settings.no_limit")], [500, "500"], [1000, "1 000"], [5000, "5 000"], [10000, "10 000"]])}</li>
+          ${sel("depositLimit", [[0, t("settings.no_limit")], [50 * U, "50 USDT"], [100 * U, "100 USDT"], [500 * U, "500 USDT"], [1000 * U, "1 000 USDT"]])}</li>
         <li><button class="row" id="pause">${ic("clock")}<div class="grow"><div>${t("settings.pause")}</div><div class="sub">${paused ? t("rg.paused_until", { date: fmtDate(new Date(S.pauseUntil).toISOString()) }) : t("settings.pause.sub")}</div></div>${ic("chev", "i chev")}</button></li>
         <li><button class="row" data-doc="responsible">${ic("help")}<span class="grow">${t("settings.rg_doc")}</span>${ic("chev", "i chev")}</button></li></ul></div>
 
       <div class="group-title">${t("settings.about_group")}</div><div class="group"><ul class="list">
         <li><button class="row" id="about">${ic("info")}<span class="grow">${t("about.title")}</span>${ic("chev", "i chev")}</button></li></ul></div>
       ${DEMO ? `<button class="btn danger block" id="demo-reset" style="margin-bottom:12px">${t("demo.reset")}</button>` : ""}
-      <p class="muted small center">Cthulhu v${VERSION}${DEMO ? " · demo" : ""}</p>`;
+      <p class="muted small center">ARA Casino v${VERSION}${DEMO ? " · demo" : ""}</p>`;
 
     $$("[data-set]", view).forEach((g) => $$("button", g).forEach((b) => (b.onclick = () => {
       const key = g.dataset.set;
@@ -1280,7 +1634,7 @@
       if (S.ageOk) return resolve(null);
       const g = document.createElement("div");
       g.className = "gate";
-      g.innerHTML = `${steps(1)}${LOGO.replace("<svg", '<svg class="logo"')}<h1>Cthulhu</h1><p>${esc(t("gate.text"))}</p>
+      g.innerHTML = `${steps(1)}${LOGO.replace("<svg", '<svg class="logo"')}<h1>ARA Casino</h1><p>${esc(t("gate.text"))}</p>
         <p class="small">${esc(C().disclaimer)}</p><div class="btns"><button class="btn primary xl" id="g-yes">${t("gate.yes")}</button>
         <button class="btn ghost" id="g-no">${t("gate.no")}</button></div>
         <div class="seg" style="width:200px"><button data-l="ru" class="${S.lang === "ru" ? "on" : ""}">RU</button><button data-l="en" class="${S.lang === "en" ? "on" : ""}">EN</button></div>`;
@@ -1300,7 +1654,7 @@
     if (!NICK_RE.test(v)) return t("nick.bad_chars");
     return null;
   }
-  const NICK_WORDS = ["Dagon", "Rlyeh", "Abyss", "Kraken", "Shoggoth", "Innsmouth", "Leviathan", "Hydra", "Tentacle", "DeepOne", "Nautilus", "Maelstrom"];
+  const NICK_WORDS = ["Sapphire", "Aurelius", "Comet", "Orbit", "Royal", "Lucky", "Nova", "Ace", "Jackpot", "Crown", "Emerald", "Meteor"];
   const randomNick = () => NICK_WORDS[Math.floor(Math.random() * NICK_WORDS.length)] + "_" + (10 + Math.floor(Math.random() * 990));
   function suggestNick() {
     const u = tg?.initDataUnsafe?.user;
@@ -1361,7 +1715,7 @@
     await loadCloudSettings();
     applyTheme();
     if (!tg?.initData && !DEMO) {
-      document.body.innerHTML = `<div class="gate">${LOGO.replace("<svg", '<svg class="logo"')}<h1>Cthulhu</h1><p>${t("gate.open_tg")}</p></div>`;
+      document.body.innerHTML = `<div class="gate">${LOGO.replace("<svg", '<svg class="logo"')}<h1>ARA Casino</h1><p>${t("gate.open_tg")}</p></div>`;
       return;
     }
     let gate = await ageGate(); // экран возраста остаётся на месте, пока грузятся данные
@@ -1375,12 +1729,12 @@
       $("#screen").innerHTML = `<div class="empty">${esc(errText(e))}</div>`;
       return;
     }
-    if (!S.bet || S.bet < state.config.min_bet) S.bet = state.config.min_bet * 5;
-    // ссылка #slot-cthulhu, #game-dice и т.п. открывает экран сразу
+    if (!S.bet || S.bet < state.config.min_bet || S.bet > state.config.max_bet) S.bet = clamp(U, state.config.min_bet, state.config.max_bet);
+    // ссылка #slot-classic, #game-crash и т.п. открывает экран сразу
     const h = location.hash.slice(1);
     const deep = h.match(/^(game|slot|doc)-(.+)$/);
     if (deep) { state.stack = ["play"]; state.route = `${deep[1]}/${deep[2]}`; }
-    else if (["chat", "profile", "settings", "help", "about", "wallet"].includes(h)) { state.stack = h === "chat" ? [] : ["play"]; state.route = h; }
+    else if (["chat", "profile", "settings", "help", "about", "wallet", "leaders"].includes(h)) { state.stack = h === "chat" ? [] : ["play"]; state.route = h; }
     render();
     if (!state.me.nickname) gate = await nickGate(gate);
     if (gate) { setBalance(state.me.balance); leaveGate(gate); if (ROOT_OF(state.route) === "menu") draw(); }

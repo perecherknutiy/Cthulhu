@@ -1,4 +1,4 @@
-"""Деньги: гонки ставок, платежи, возвраты, рефералка, выводы."""
+"""Деньги: гонки ставок, пополнения USDT (TON), рефералка, выводы."""
 import asyncio
 
 import pytest
@@ -6,12 +6,12 @@ from sqlalchemy import func, select
 
 from app.db import get_sessionmaker
 from app.errors import AppError, InsufficientFunds
-from app.models import Bet, Invoice, InvoiceStatus, Payment, PaymentStatus, Transaction, TxKind, User, WithdrawalStatus
-from app.payouts import plan_gifts
-from app.services import payments, withdrawals
+from app.models import Bet, DepositStatus, Transaction, TxKind, User, WithdrawalStatus
+from app.services import deposits, withdrawals
 from app.services.games import GameService
-from app.services.users import TgUser
 from tests.conftest import make_user
+
+USER_WALLET = "UQAzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM-lI"
 
 
 async def ledger_ok(session, user_id):
@@ -19,6 +19,12 @@ async def ledger_ok(session, user_id):
     u = await session.get(User, user_id, populate_existing=True)
     assert s == u.balance, "сумма леджера должна совпадать с балансом"
     return u
+
+
+async def deposit(session, settings, user: User | None, amount: int, tx: str, comment: str | None = None):
+    return await deposits.credit_incoming(session, settings, tx_hash=tx, lt=1, amount=amount,
+                                          comment=comment if comment is not None else (str(user.public_id) if user else None),
+                                          sender="0:" + "33" * 32)
 
 
 # ---------------------------------------------------------------- concurrency
@@ -62,35 +68,25 @@ async def test_banned_cannot_bet(session, settings):
         await GameService(settings).play_instant(session, 12, "coinflip", 10, {"side": "heads"})
 
 
-# ---------------------------------------------------------------- payments
-async def test_deposit_flow_idempotent(session, settings, bot):
-    await make_user(session, 20)
-    inv, link = await payments.create_invoice(session, bot, settings, 20, 100)
-    call = bot.called("create_invoice_link")[0]
-    assert call["currency"] == "XTR" and call["prices"][0].amount == 100 and call["payload"] == inv.id
-
-    assert await payments.check_pre_checkout(session, 20, inv.id, "XTR", 100) is None
-    assert await payments.check_pre_checkout(session, 20, inv.id, "XTR", 99) is not None
-    assert await payments.check_pre_checkout(session, 21, inv.id, "XTR", 100) is not None
-    assert await payments.check_pre_checkout(session, 20, "nope", "XTR", 100) is not None
-
-    tg, inv_id = TgUser(id=20), inv.id
-    assert await payments.process_successful_payment(session, settings, tg, inv_id, "charge-1", "XTR", 100)
-    # повтор того же апдейта (Telegram может прислать дважды) — не зачисляется
-    assert not await payments.process_successful_payment(session, settings, tg, inv_id, "charge-1", "XTR", 100)
+# ---------------------------------------------------------------- пополнения USDT
+async def test_deposit_credited_once(session, settings):
+    u = await make_user(session, 20)
+    dep, who = await deposit(session, settings, u, 1_500_000, "tx-1")
+    assert dep.status == DepositStatus.credited and who.id == 20
+    # тот же перевод ещё раз (повторный опрос, второй экземпляр сторожа) — не зачисляется
+    assert await deposit(session, settings, u, 1_500_000, "tx-1") == (None, None)
     u = await ledger_ok(session, 20)
-    assert u.balance == 100 and u.total_deposited == 100
-    assert (await session.get(Invoice, inv_id, populate_existing=True)).status == InvoiceStatus.paid
-    assert await payments.check_pre_checkout(session, 20, inv_id, "XTR", 100) == "Этот счёт уже оплачен"
+    assert u.balance == 1_500_000 and u.total_deposited == 1_500_000
 
 
-async def test_parallel_duplicate_payment_updates(settings):
+async def test_parallel_duplicate_deposits(settings):
     async with get_sessionmaker()() as s:
-        await make_user(s, 22)
+        u = await make_user(s, 22)
 
     async def deliver():
         async with get_sessionmaker()() as s:
-            return await payments.process_successful_payment(s, settings, TgUser(id=22), "x", "dup", "XTR", 50)
+            dep, _ = await deposit(s, settings, u, 50, "dup")
+            return dep is not None
 
     res = await asyncio.gather(*[deliver() for _ in range(5)])
     assert sum(res) == 1
@@ -98,83 +94,65 @@ async def test_parallel_duplicate_payment_updates(settings):
         assert (await ledger_ok(s, 22)).balance == 50
 
 
-async def test_deposit_bounds(session, settings, bot):
-    await make_user(session, 23)
-    with pytest.raises(AppError):
-        await payments.create_invoice(session, bot, settings, 23, settings.min_deposit - 1)
+@pytest.mark.parametrize("comment, ok", [("100001", True), ("ID 100001", True), ("ara100001!", True),
+                                         ("", False), ("hello", False), ("100001 100002", False), ("12345", False)])
+def test_parse_memo(comment, ok):
+    assert (deposits.parse_memo(comment) == 100001) is ok
 
 
-async def test_referral_bonus(session, settings, bot):
+async def test_unmatched_deposit_admin_assigns(session, settings):
+    u = await make_user(session, 24)
+    dep, who = await deposit(session, settings, None, 700, "tx-nomemo", comment="за фишки")
+    assert who is None and dep.status == DepositStatus.unmatched
+    dep2, _ = await deposit(session, settings, None, 300, "tx-wrong", comment="999999")  # нет такого игрока
+    assert dep2.status == DepositStatus.unmatched
+    dep, who = await deposits.assign(session, settings, str(dep.id), 24)
+    assert dep.status == DepositStatus.credited and dep.user_id == 24
+    with pytest.raises(AppError, match="уже обработан"):
+        await deposits.assign(session, settings, str(dep.id), 24)
+    await deposits.assign(session, settings, "tx-wr", u.id)  # по началу хэша
+    assert (await ledger_ok(session, 24)).balance == 1000
+
+
+async def test_banned_user_still_gets_deposit(session, settings):
+    u = await make_user(session, 25, is_banned=True)
+    _, who = await deposit(session, settings, u, 100, "tx-ban")
+    assert who is not None and (await ledger_ok(session, 25)).balance == 100
+
+
+async def test_referral_bonus(session, settings):
     settings.referral_deposit_percent = 10
     try:
         await make_user(session, 30)
-        await make_user(session, 31, referrer_id=30)
-        await payments.process_successful_payment(session, settings, TgUser(id=31), "p", "c-ref", "XTR", 255)
+        u = await make_user(session, 31, referrer_id=30)
+        await deposit(session, settings, u, 255, "tx-ref")
         assert (await ledger_ok(session, 30)).balance == 25
         assert (await ledger_ok(session, 31)).balance == 255
     finally:
         settings.referral_deposit_percent = 0
 
 
-async def test_admin_refund(session, settings, bot):
-    await make_user(session, 40)
-    await payments.process_successful_payment(session, settings, TgUser(id=40), "p", "c-40", "XTR", 100)
-    p = await payments.refund_payment(session, bot, "c-40")
-    assert p.status == PaymentStatus.refunded
-    assert bot.called("refund_star_payment") == [{"user_id": 40, "telegram_payment_charge_id": "c-40"}]
-    assert (await ledger_ok(session, 40)).balance == 0
-    with pytest.raises(AppError):
-        await payments.refund_payment(session, bot, "c-40")
-    # повторное событие refunded_payment от Telegram ничего не меняет
-    assert not await payments.on_refunded_payment(session, 40, "c-40", 100)
-
-
-async def test_refund_blocked_when_balance_spent(session, settings, bot):
-    await make_user(session, 41)
-    await payments.process_successful_payment(session, settings, TgUser(id=41), "p", "c-41", "XTR", 100)
-    await GameService(settings).play_instant(session, 41, "dice", 100, {"target": "1.00"})
-    u = await session.get(User, 41, populate_existing=True)
-    if u.balance < 100:
-        with pytest.raises(InsufficientFunds):
-            await payments.refund_payment(session, bot, "c-41")
-        await session.rollback()
-        assert (await session.scalar(select(Payment.status).where(Payment.telegram_payment_charge_id == "c-41"))) \
-            == PaymentStatus.paid
-        assert not bot.called("refund_star_payment")
-
-
-async def test_external_refund_event(session, settings):
-    await make_user(session, 42)
-    await payments.process_successful_payment(session, settings, TgUser(id=42), "p", "c-42", "XTR", 100)
-    await GameService(settings).play_instant(session, 42, "dice", 60, {"target": "1.00"})
-    assert await payments.on_refunded_payment(session, 42, "c-42", 100)
-    u = await ledger_ok(session, 42)
-    assert u.total_deposited == 0
+def test_deposit_info(settings):
+    info = deposits.deposit_info(settings, User(public_id=100777))
+    assert info["enabled"] and info["memo"] == "100777" and info["address"].startswith("UQ")
+    assert info["links"]["ton"].startswith("ton://transfer/" + info["address"] + "?jetton=" + settings.ton_usdt_master)
+    assert "text=100777" in info["links"]["tonkeeper"] and info["links"]["tonkeeper"].startswith("https://")
 
 
 # ---------------------------------------------------------------- withdrawals
-def test_plan_gifts():
-    d = {15: "a", 25: "b", 50: "c", 100: "d"}
-    ids, total = plan_gifts(190, d)
-    assert total == 190 and len(ids) == 4  # 100+50+25+15
-    ids, total = plan_gifts(14, d)
-    assert total == 0 and ids == []
-    ids, total = plan_gifts(41, d)
-    assert total == 40  # 25+15
-
-
 async def test_wager_requirement(session, settings):
     await make_user(session, 50, balance=500, total_deposited=500, total_wagered=100)
-    with pytest.raises(AppError, match="ставок ещё на 400"):
-        await withdrawals.request_withdrawal(session, settings, 50, 200)
+    with pytest.raises(AppError, match="ставок ещё на 0.0004 USDT"):
+        await withdrawals.request_withdrawal(session, settings, 50, 200, USER_WALLET)
 
 
 async def test_withdraw_reject_returns_money(session, settings):
     await make_user(session, 51, balance=500)
-    w = await withdrawals.request_withdrawal(session, settings, 51, 300)
+    w = await withdrawals.request_withdrawal(session, settings, 51, 300, USER_WALLET)
+    assert w.address == USER_WALLET and w.method == "ton"
     assert (await ledger_ok(session, 51)).balance == 200
     with pytest.raises(AppError, match="уже есть заявка"):
-        await withdrawals.request_withdrawal(session, settings, 51, 100)
+        await withdrawals.request_withdrawal(session, settings, 51, 100, USER_WALLET)
     w = await withdrawals.reject(session, w.id, 1, "nope")
     assert w.status == WithdrawalStatus.rejected
     assert (await ledger_ok(session, 51)).balance == 500
@@ -182,56 +160,43 @@ async def test_withdraw_reject_returns_money(session, settings):
         await withdrawals.reject(session, w.id, 1)
 
 
-async def test_withdraw_manual_approve(session, settings, bot):
+async def test_withdraw_mark_paid(session, settings):
     await make_user(session, 52, balance=500)
-    w = await withdrawals.request_withdrawal(session, settings, 52, 300)
-    w, res = await withdrawals.approve(session, bot, w.id, 1)
-    assert w.status == WithdrawalStatus.completed and w.paid_amount == 300
+    w = await withdrawals.request_withdrawal(session, settings, 52, 300, "0:" + "33" * 32)  # raw-адрес тоже можно
+    assert w.address == USER_WALLET
+    w = await withdrawals.mark_paid(session, w.id, 1, tx_hash="abc")
+    assert w.status == WithdrawalStatus.completed and w.paid_amount == 300 and w.tx_hash == "abc"
     u = await ledger_ok(session, 52)
     assert u.balance == 200 and u.total_withdrawn == 300
+    with pytest.raises(AppError):
+        await withdrawals.mark_paid(session, w.id, 1)
+    with pytest.raises(AppError):
+        await withdrawals.reject(session, w.id, 1)
 
 
-async def test_withdraw_gifts_with_remainder(session, settings, bot):
+async def test_withdraw_fee(session, settings):
     await make_user(session, 53, balance=500)
-    settings.payout_method = "gifts"
+    settings.withdraw_fee = 30
     try:
-        w = await withdrawals.request_withdrawal(session, settings, 53, 199)
-        w, res = await withdrawals.approve(session, bot, w.id, 1)
+        w = await withdrawals.request_withdrawal(session, settings, 53, 300, USER_WALLET)
     finally:
-        settings.payout_method = "manual"
-    assert w.status == WithdrawalStatus.completed
-    assert w.paid_amount == 195  # максимум ≤ 199 из номиналов 15/25/50/100, остаток 4 вернулся
-    assert all(c["gift_id"] != "limited" for c in bot.called("send_gift"))
-    u = await ledger_ok(session, 53)
-    assert u.balance == 500 - 195 and u.total_withdrawn == 195
+        settings.withdraw_fee = 0
+    w = await withdrawals.mark_paid(session, w.id, 1)
+    assert w.fee == 30 and w.paid_amount == 270
+    assert (await ledger_ok(session, 53)).balance == 200
 
 
-async def test_withdraw_gifts_bot_has_no_stars(session, settings, bot):
+@pytest.mark.parametrize("addr", ["", "hello", "UQAzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM-lA",  # плохая контрольная сумма
+                                  "Ef8zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM0vF",  # masterchain
+                                  "UQAREREREREREREREREREREREREREREREREREREREREREbvW"])  # адрес самого казино
+async def test_withdraw_bad_address(session, settings, addr):
     await make_user(session, 54, balance=500)
-    bot.star_balance = 10
-    settings.payout_method = "gifts"
-    try:
-        w = await withdrawals.request_withdrawal(session, settings, 54, 200)
-        w, res = await withdrawals.approve(session, bot, w.id, 1)
-    finally:
-        settings.payout_method = "manual"
-    assert w.status == WithdrawalStatus.failed and res.error
+    with pytest.raises(AppError) as e:
+        await withdrawals.request_withdrawal(session, settings, 54, 200, addr)
+    assert e.value.code == "bad_address"
     assert (await ledger_ok(session, 54)).balance == 500
-
-
-async def test_withdraw_gifts_partial_failure(session, settings, bot):
-    await make_user(session, 55, balance=500)
-    bot.fail_gift_after = 1
-    settings.payout_method = "gifts"
-    try:
-        w = await withdrawals.request_withdrawal(session, settings, 55, 150)
-        w, res = await withdrawals.approve(session, bot, w.id, 1)
-    finally:
-        settings.payout_method = "manual"
-    assert w.status == WithdrawalStatus.completed and w.paid_amount == 100 and res.error
-    assert (await ledger_ok(session, 55)).balance == 400
 
 
 async def test_ledger_kinds_cover_everything(session):
     kinds = {k.value for k in TxKind}
-    assert {"deposit", "bet", "win", "withdrawal", "withdrawal_refund", "payment_refund", "referral", "admin"} <= kinds
+    assert {"deposit", "bet", "win", "withdrawal", "withdrawal_refund", "referral", "admin", "bonus"} <= kinds

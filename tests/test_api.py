@@ -23,31 +23,33 @@ async def test_me_registers_with_referrer(client, session):
     assert r.status_code == 200
     me = r.json()
     assert me["id"] == 501 and me["balance"] == 0
-    assert me["referral_link"] == "https://t.me/cthulhu_test_bot?startapp=ref_501"
+    assert me["referral"]["link"] == f"https://t.me/ara_test_bot?startapp=ref_{me['public_id']}"
     r = await client.get("/api/me", headers=auth(500))
-    assert r.json()["referrals"] == 1
+    assert r.json()["referral"]["invited"] == 1
 
 
 async def test_self_referral_ignored(client):
     r = await client.get("/api/me", headers=auth(502, start_param="ref_502"))
     assert r.status_code == 200
     r = await client.get("/api/me", headers=auth(502))
-    assert r.json()["referrals"] == 0
+    assert r.json()["referral"]["invited"] == 0
 
 
 async def test_config(client):
     cfg = (await client.get("/api/config", headers=auth(1))).json()
     names = {g["name"] for g in cfg["games"]}
-    assert names == {"dice", "coinflip", "limbo", "plinko", "mines"}
-    assert cfg["bot_username"] == "cthulhu_test_bot"
+    assert names == {"dice", "coinflip", "limbo", "plinko", "roulette", "slots", "mines", "crash"}
+    assert cfg["bot_username"] == "ara_test_bot"
+    assert cfg["currency"] == {"code": "USDT", "decimals": 6, "network": "TON"}
+    assert cfg["deposit"]["enabled"] and cfg["withdraw"]["method"] == "ton"
 
 
-async def test_invoice_endpoint(client, bot):
-    r = await client.post("/api/wallet/invoice", json={"amount": 100}, headers=auth(510))
-    assert r.status_code == 200, r.text
-    assert r.json()["invoice_link"].startswith("https://t.me/$invoice_")
-    r = await client.post("/api/wallet/invoice", json={"amount": 1}, headers=auth(510))
-    assert r.status_code == 400 and r.json()["error"]["code"] == "bad_amount"
+async def test_deposit_endpoint(client):
+    me = (await client.get("/api/me", headers=auth(510))).json()
+    d = (await client.get("/api/wallet/deposit", headers=auth(510))).json()
+    assert d["enabled"] and d["memo"] == str(me["public_id"]) and d["token"] == "USDT" and d["network"] == "TON"
+    assert d["address"] == "UQAREREREREREREREREREREREREREREREREREREREREREbvW"
+    assert d["links"]["ton"].startswith("ton://transfer/")
 
 
 @pytest.mark.parametrize("game,params", [
@@ -151,11 +153,17 @@ async def test_mines_lose(client, session):
 async def test_withdraw_notifies_admin(client, session, bot):
     await make_user(session, 550, balance=1000)
     r = await client.post("/api/wallet/withdraw", json={"amount": 300}, headers=auth(550))
+    assert r.status_code == 422  # без адреса нельзя
+    r = await client.post("/api/wallet/withdraw", json={"amount": 300, "address": "nope"}, headers=auth(550))
+    assert r.json()["error"]["code"] == "bad_address"
+    r = await client.post("/api/wallet/withdraw", json={"amount": 300, "address": "0:" + "44" * 32}, headers=auth(550))
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "pending"
+    assert r.json()["status"] == "pending" and r.json()["address"].startswith("UQ")
     msgs = bot.called("send_message")
     assert msgs and msgs[0]["chat_id"] == ADMIN_ID and "#1" in msgs[0]["text"]
-    assert msgs[0]["reply_markup"].inline_keyboard[0][0].callback_data == "wd:ok:1"
+    kb = msgs[0]["reply_markup"].inline_keyboard
+    assert kb[0][0].url.startswith("https://app.tonkeeper.com/transfer/" + r.json()["address"])
+    assert "amount=300" in kb[0][0].url and kb[1][0].callback_data == "wd:ok:1"
     lst = (await client.get("/api/wallet/withdrawals", headers=auth(550))).json()
     assert lst[0]["amount"] == 300
 

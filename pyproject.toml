@@ -1,5 +1,5 @@
 [project]
-name = "cthulhu-casino"
+name = "ara-casino"
 version = "0.1.0"
 description = "Telegram Mini App casino on Telegram Stars"
 requires-python = ">=3.12"
@@ -11,6 +11,7 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.16",
     "pydantic-settings>=2.6",
+    "pytoniq-core==0.2.1",  # разбор ячеек и адресов TON (пополнения USDT)
 ]
 
 [build-system]

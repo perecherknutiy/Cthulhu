@@ -9,11 +9,20 @@ import os
 import time
 from types import SimpleNamespace
 
+os.environ["ENV_FILE"] = ""  # тесты не читают .env с боевым токеном
 os.environ.setdefault("BOT_TOKEN", "123456:TEST-TOKEN")
 os.environ["BOT_MODE"] = "none"
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/casino_test")
 os.environ.setdefault("ADMIN_IDS", "1")
+# Суммы в тестах — целые микро-USDT. Лимиты маленькие, чтобы тесты игр работали с «круглыми» числами
+# (ставка 10 = 0.00001 USDT): математика от масштаба не зависит. Настоящие значения по умолчанию — в test_ton.py.
+for _k, _v in {"MIN_BET": "0.00001", "MAX_BET": "0.01", "MAX_PAYOUT": "0.5", "MIN_DEPOSIT": "0.00005",
+               "WITHDRAW_MIN": "0.0001", "WITHDRAW_MAX": "0.1"}.items():
+    os.environ[_k] = _v
+os.environ["TON_WALLET_ADDRESS"] = "UQAREREREREREREREREREREREREREREREREREREREREREbvW"  # 0:1111…
+os.environ["TON_USDT_JETTON_WALLET"] = "0:" + "22" * 32
+os.environ["DEPOSIT_WATCHER"] = "false"
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
@@ -32,15 +41,6 @@ class FakeBot:
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
-        self.star_balance = 1_000_000
-        self.gifts = [
-            SimpleNamespace(id="g15", star_count=15, total_count=None, is_premium=False),
-            SimpleNamespace(id="g25", star_count=25, total_count=None, is_premium=False),
-            SimpleNamespace(id="g50", star_count=50, total_count=None, is_premium=False),
-            SimpleNamespace(id="g100", star_count=100, total_count=None, is_premium=False),
-            SimpleNamespace(id="limited", star_count=10, total_count=1000, is_premium=False),
-        ]
-        self.fail_gift_after: int | None = None
         self.session = SimpleNamespace(close=self._noop)
 
     async def _noop(self):
@@ -53,34 +53,10 @@ class FakeBot:
         return [kw for n, kw in self.calls if n == name]
 
     async def me(self):
-        return SimpleNamespace(id=999, username="cthulhu_test_bot")
-
-    async def create_invoice_link(self, **kw):
-        self._rec("create_invoice_link", **kw)
-        return f"https://t.me/$invoice_{kw['payload']}"
-
-    async def send_invoice(self, **kw):
-        self._rec("send_invoice", **kw)
+        return SimpleNamespace(id=999, username="ara_test_bot")
 
     async def send_message(self, chat_id, text, **kw):
         self._rec("send_message", chat_id=chat_id, text=text, **kw)
-
-    async def refund_star_payment(self, **kw):
-        self._rec("refund_star_payment", **kw)
-        return True
-
-    async def get_available_gifts(self):
-        return SimpleNamespace(gifts=self.gifts)
-
-    async def get_my_star_balance(self):
-        return SimpleNamespace(amount=self.star_balance, nanostar_amount=0)
-
-    async def send_gift(self, **kw):
-        if self.fail_gift_after is not None and len(self.called("send_gift")) >= self.fail_gift_after:
-            raise RuntimeError("gift limit")
-        self._rec("send_gift", **kw)
-        self.star_balance -= int(kw["gift_id"][1:])
-        return True
 
 
 @pytest.fixture(scope="session")
@@ -93,7 +69,9 @@ def settings() -> Settings:
 async def _schema(settings):
     init_engine(settings.database_url)
     async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        # с нуля: в тестовой базе могли остаться таблицы от старых версий схемы
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     await dispose_engine()
