@@ -67,7 +67,7 @@ def validate_init_data(init_data: str, bot_token: str, max_age: int, now: int | 
     try:
         u = json.loads(pairs["user"])
         user = TgUser(id=int(u["id"]), username=u.get("username"), first_name=u.get("first_name"),
-                      language_code=u.get("language_code"))
+                      language_code=u.get("language_code"), photo_url=u.get("photo_url"))
     except (KeyError, ValueError, TypeError) as e:
         raise InitDataError("user is missing") from e
 

@@ -9,45 +9,52 @@ from app.models import Bet, Transaction, Withdrawal
 
 
 class MeOut(BaseModel):
-    id: int
+    id: int  # Telegram ID (оставлен для совместимости)
+    telegram_id: int
+    public_id: int  # внутренний ID игрока
+    nickname: str | None  # None — фронт попросит выбрать ник
     username: str | None
     first_name: str | None
+    photo_url: str | None
     balance: int
     total_deposited: int
     total_withdrawn: int
     total_wagered: int
     total_won: int
+    total_bonus: int
     wager_left: int
-    referral_link: str
-    referrals: int
+    vip: dict[str, Any]
+    referral: dict[str, Any]  # {link, invited, earned, percent}
+    bonus: dict[str, Any]
+    created_at: datetime
 
 
-class InvoiceIn(BaseModel):
-    amount: int = Field(gt=0)
-
-
-class InvoiceOut(BaseModel):
-    invoice_id: str
-    invoice_link: str
+class NicknameIn(BaseModel):
+    nickname: str = Field(max_length=64)
 
 
 class WithdrawIn(BaseModel):
-    amount: int = Field(gt=0)
+    amount: int = Field(gt=0)  # микро-USDT
+    address: str = Field(min_length=1, max_length=80)  # кошелёк TON игрока
 
 
 class WithdrawalOut(BaseModel):
     id: int
     amount: int
+    fee: int
     paid_amount: int
     status: str
     method: str
+    address: str | None
+    tx_hash: str | None
     created_at: datetime
     processed_at: datetime | None
 
     @classmethod
     def of(cls, w: Withdrawal) -> WithdrawalOut:
-        return cls(id=w.id, amount=w.amount, paid_amount=w.paid_amount, status=w.status.value, method=w.method,
-                   created_at=w.created_at, processed_at=w.processed_at)
+        return cls(id=w.id, amount=w.amount, fee=w.fee, paid_amount=w.paid_amount, status=w.status.value,
+                   method=w.method, address=w.address, tx_hash=w.tx_hash, created_at=w.created_at,
+                   processed_at=w.processed_at)
 
 
 class TransactionOut(BaseModel):

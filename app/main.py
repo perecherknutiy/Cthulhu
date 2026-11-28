@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import account, games
 from app.bot.setup import configure_bot, create_bot, create_dispatcher
 from app.config import Settings, get_settings
-from app.db import dispose_engine, init_engine
+from app.db import dispose_engine, get_sessionmaker, init_engine
 from app.errors import AppError
 from app.ratelimit import RateLimiter
 from app.services.games import GameService
@@ -49,9 +49,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await bot.set_webhook(settings.webhook_url, secret_token=settings.webhook_secret or None,
                                   allowed_updates=dp.resolve_used_update_types())
             log.info("Webhook set to %s", settings.webhook_url)
+        watcher_task: asyncio.Task | None = None
+        if settings.ton_wallet_address and settings.deposit_watcher:
+            from app.ton.toncenter import Toncenter
+            from app.ton.watcher import DepositWatcher, bot_notifier
+
+            client = Toncenter(settings.toncenter_url, settings.toncenter_api_key)
+            watcher = DepositWatcher(settings, get_sessionmaker(), client, bot_notifier(bot, settings))
+            watcher_task = asyncio.create_task(watcher.run())
+            log.info("Слежу за пополнениями USDT на %s", settings.ton_wallet_address)
+        elif not settings.ton_wallet_address:
+            log.warning("TON_WALLET_ADDRESS не задан — пополнение выключено")
         try:
             yield
         finally:
+            if watcher_task:
+                watcher_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await watcher_task
+                await client.close()
             if polling:
                 with contextlib.suppress(Exception):
                     await dp.stop_polling()
@@ -61,7 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await bot.session.close()
             await dispose_engine()
 
-    app = FastAPI(title="Cthulhu Casino API", lifespan=lifespan, docs_url="/docs" if settings.debug else None)
+    app = FastAPI(title="ARA Casino API", lifespan=lifespan, docs_url="/docs" if settings.debug else None)
     app.state.settings = settings
     app.state.bot = create_bot(settings)
     app.state.dp = create_dispatcher()

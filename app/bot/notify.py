@@ -7,32 +7,43 @@ import logging
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.models import User, Withdrawal
+from app.money import usdt
+from app.ton.address import jetton_transfer_link
 
 log = logging.getLogger(__name__)
 
 
 def user_label(user: User) -> str:
-    name = html.escape(user.first_name or "")
+    name = html.escape(user.nickname or user.first_name or "")
     uname = f" @{html.escape(user.username)}" if user.username else ""
-    return f'<a href="tg://user?id={user.id}">{name or user.id}</a>{uname} (<code>{user.id}</code>)'
+    return (f'<a href="tg://user?id={user.id}">{name or user.id}</a>{uname} '
+            f'(ID <code>{user.public_id}</code>, TG <code>{user.id}</code>)')
 
 
 def withdrawal_keyboard(w: Withdrawal) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Отправить подарками" if w.method == "gifts" else "✅ Я выплатил вручную",
-                             callback_data=f"wd:ok:{w.id}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd:no:{w.id}"),
-    ]])
+    from app.services.withdrawals import payout_comment
+
+    rows = []
+    if w.address:  # перевод в Tonkeeper с уже подставленными адресом, суммой и комментарием
+        link = jetton_transfer_link(w.address, get_settings().ton_usdt_master, w.amount - w.fee, payout_comment(w),
+                                    prefix="https://app.tonkeeper.com/")
+        rows.append([InlineKeyboardButton(text="📤 Открыть перевод в Tonkeeper", url=link)])
+    rows.append([InlineKeyboardButton(text="✅ Отправил", callback_data=f"wd:ok:{w.id}"),
+                 InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd:no:{w.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def withdrawal_text(w: Withdrawal, user: User) -> str:
     return (
         f"💸 <b>Заявка на вывод #{w.id}</b>\n"
         f"Игрок: {user_label(user)}\n"
-        f"Сумма: <b>{w.amount} ⭐</b>  •  способ: {w.method}\n"
-        f"Депозиты: {user.total_deposited} ⭐  •  ставки: {user.total_wagered} ⭐  •  выигрыши: {user.total_won} ⭐\n"
+        f"К отправке: <b>{usdt(w.amount - w.fee)}</b> (USDT, сеть TON)"
+        + (f"  •  комиссия {usdt(w.fee)}" if w.fee else "") + "\n"
+        f"Адрес: <code>{html.escape(w.address or '—')}</code>\n"
+        f"Депозиты: {usdt(user.total_deposited)}  •  ставки: {usdt(user.total_wagered)}  •  "
+        f"выигрыши: {usdt(user.total_won)}\n"
         f"Статус: {w.status.value}"
     )
 

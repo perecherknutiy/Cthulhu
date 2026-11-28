@@ -48,6 +48,25 @@ async def mines_cashout(request: Request, user: UserDep, session: SessionDep, ga
     return await _out(session, await games.mines_cashout(session, user.id))
 
 
+# ---------------------------------------------------------------- crash
+@router.get("/games/crash/active")
+async def crash_active(user: UserDep, session: SessionDep, games: GamesDep):
+    """Текущий раунд (если идёт). server_now — чтобы фронт синхронизировал часы."""
+    return {"game": await games.crash_get_active(session, user.id), "server_now": games.clock()}
+
+
+@router.post("/games/crash/start", response_model=PlayOut)
+async def crash_start(body: PlayIn, request: Request, user: UserDep, session: SessionDep, games: GamesDep):
+    _limit(request, user.id)
+    return await _out(session, await games.crash_start(session, user.id, body.amount, body.params))
+
+
+@router.post("/games/crash/cashout", response_model=PlayOut)
+async def crash_cashout(request: Request, user: UserDep, session: SessionDep, games: GamesDep):
+    _limit(request, user.id)
+    return await _out(session, await games.crash_cashout(session, user.id))
+
+
 # ---------------------------------------------------------------- instant games
 @router.post("/games/{game}/play", response_model=PlayOut)
 async def play(game: str, body: PlayIn, request: Request, user: UserDep, session: SessionDep, games: GamesDep):
@@ -57,8 +76,9 @@ async def play(game: str, body: PlayIn, request: Request, user: UserDep, session
 
 # ---------------------------------------------------------------- history
 @router.get("/bets", response_model=list[BetOut])
-async def bets(user: UserDep, session: SessionDep, limit: int = Query(30, ge=1, le=100),
+async def bets(user: UserDep, session: SessionDep, games: GamesDep, limit: int = Query(30, ge=1, le=100),
                before_id: int | None = None, game: str | None = None):
+    await games.settle_crash(session, user.id)  # досчитать завершившийся раунд, чтобы он попал в историю
     q = select(Bet).options(joinedload(Bet.seed)).where(Bet.user_id == user.id, Bet.status != BetStatus.active)
     if before_id:
         q = q.where(Bet.id < before_id)
@@ -85,8 +105,9 @@ async def fair(user: UserDep, session: SessionDep):
 
 
 @router.post("/fair/rotate", response_model=RotateOut)
-async def rotate(body: RotateIn, user: UserDep, session: SessionDep):
+async def rotate(body: RotateIn, user: UserDep, session: SessionDep, games: GamesDep):
     """Раскрыть текущий server seed и начать новую пару (можно сразу задать новый client seed)."""
+    await games.settle_crash(session, user.id)
     await wallet.lock_user(session, user.id)
     old, new = await seeds.rotate_seed(session, user.id, body.client_seed)
     await session.commit()

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Bet, BetStatus, Payment, PaymentStatus, User, Withdrawal, WithdrawalStatus
+from app.models import Bet, BetStatus, DepositStatus, TonDeposit, User, Withdrawal, WithdrawalStatus
 
 
 async def summary(session: AsyncSession, since: datetime | None = None) -> dict[str, int]:
@@ -14,8 +14,8 @@ async def summary(session: AsyncSession, since: datetime | None = None) -> dict[
 
     users = await session.scalar(select(func.count(User.id)).where(*period(User.created_at)))
     deposits = await session.scalar(
-        select(func.coalesce(func.sum(Payment.amount), 0))
-        .where(Payment.status == PaymentStatus.paid, *period(Payment.created_at))
+        select(func.coalesce(func.sum(TonDeposit.amount), 0))
+        .where(TonDeposit.status == DepositStatus.credited, *period(TonDeposit.created_at))
     )
     bets = (await session.execute(
         select(func.count(Bet.id), func.coalesce(func.sum(Bet.amount), 0), func.coalesce(func.sum(Bet.payout), 0))
@@ -29,6 +29,9 @@ async def summary(session: AsyncSession, since: datetime | None = None) -> dict[
         select(func.count(Withdrawal.id)).where(Withdrawal.status == WithdrawalStatus.pending)
     )
     liabilities = await session.scalar(select(func.coalesce(func.sum(User.balance), 0)))
+    unmatched = await session.scalar(
+        select(func.count(TonDeposit.id)).where(TonDeposit.status == DepositStatus.unmatched)
+    )
     return {
         "users": users or 0,
         "deposits": int(deposits),
@@ -39,6 +42,7 @@ async def summary(session: AsyncSession, since: datetime | None = None) -> dict[
         "withdrawn": int(withdrawn),
         "pending_withdrawals": pending_wd or 0,
         "user_balances": int(liabilities),
+        "unmatched_deposits": unmatched or 0,
     }
 
 

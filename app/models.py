@@ -1,19 +1,21 @@
-"""Модели БД. Все денежные поля — целые звёзды (BigInteger)."""
+"""Модели БД. Все денежные поля — целые микро-USDT (BigInteger, 1 USDT = 1 000 000), см. app/money.py."""
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    Sequence,
     String,
     Text,
     func,
@@ -38,21 +40,15 @@ class TxKind(str, enum.Enum):
     win = "win"
     withdrawal = "withdrawal"
     withdrawal_refund = "withdrawal_refund"
-    payment_refund = "payment_refund"
     referral = "referral"
     admin = "admin"
     bonus = "bonus"
 
 
-class InvoiceStatus(str, enum.Enum):
-    pending = "pending"
-    paid = "paid"
-    expired = "expired"
-
-
-class PaymentStatus(str, enum.Enum):
-    paid = "paid"
-    refunded = "refunded"
+class DepositStatus(str, enum.Enum):
+    credited = "credited"  # зачислено игроку
+    unmatched = "unmatched"  # комментарий не подошёл — ждёт ручного зачисления (/credit)
+    ignored = "ignored"  # админ решил не зачислять
 
 
 class BetStatus(str, enum.Enum):
@@ -69,10 +65,18 @@ class WithdrawalStatus(str, enum.Enum):
     failed = "failed"
 
 
+PUBLIC_ID_SEQ = Sequence("users_public_id_seq", start=100001)
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)  # telegram user id
+    # внутренний ID игрока: его видно в профиле и в реферальной ссылке вместо Telegram ID
+    public_id: Mapped[int] = mapped_column(BigInteger, PUBLIC_ID_SEQ, server_default=PUBLIC_ID_SEQ.next_value(),
+                                           unique=True)
+    nickname: Mapped[str | None] = mapped_column(String(20))  # None — ещё не выбран
+    photo_url: Mapped[str | None] = mapped_column(String(512))
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str | None] = mapped_column(String(128))
     language_code: Mapped[str | None] = mapped_column(String(16))
@@ -82,6 +86,8 @@ class User(Base):
     total_withdrawn: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     total_wagered: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     total_won: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    total_bonus: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")  # ежедневные бонусы
+    bonus_claimed_on: Mapped[date | None] = mapped_column(Date)  # дата (UTC) последнего бонуса
 
     referrer_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), index=True)
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
@@ -89,33 +95,37 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-
-class Invoice(Base):
-    """Наш счёт на пополнение. id уходит в payload инвойса Telegram."""
-
-    __tablename__ = "invoices"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
-    amount: Mapped[int] = mapped_column(BigInteger)
-    status: Mapped[InvoiceStatus] = mapped_column(_enum(InvoiceStatus), default=InvoiceStatus.pending)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        # ник уникален без учёта регистра
+        Index("uq_users_nickname_lower", text("lower(nickname)"), unique=True),
+    )
 
 
-class Payment(Base):
-    """Фактически полученный платёж в звёздах (successful_payment)."""
+class TonDeposit(Base):
+    """Входящий перевод USDT на кошелёк казино (сеть TON). Один перевод = одна строка, повторно не зачисляется."""
 
-    __tablename__ = "payments"
+    __tablename__ = "ton_deposits"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
-    invoice_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("invoices.id"))
+    tx_hash: Mapped[str] = mapped_column(String(96), unique=True)  # хэш транзакции кошелька казино
+    lt: Mapped[int] = mapped_column(BigInteger, index=True)
     amount: Mapped[int] = mapped_column(BigInteger)
-    telegram_payment_charge_id: Mapped[str] = mapped_column(String(255), unique=True)
-    status: Mapped[PaymentStatus] = mapped_column(_enum(PaymentStatus), default=PaymentStatus.paid)
+    comment: Mapped[str | None] = mapped_column(String(256))
+    sender: Mapped[str | None] = mapped_column(String(80))  # адрес отправителя, raw
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
+    status: Mapped[DepositStatus] = mapped_column(_enum(DepositStatus), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    credited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class KV(Base):
+    """Служебные значения (например, до какой транзакции кошелька мы уже дочитали)."""
+
+    __tablename__ = "kv"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Transaction(Base):
@@ -191,10 +201,13 @@ class Withdrawal(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
-    amount: Mapped[int] = mapped_column(BigInteger)
+    amount: Mapped[int] = mapped_column(BigInteger)  # списано с баланса
+    fee: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")  # к отправке = amount - fee
     paid_amount: Mapped[int] = mapped_column(BigInteger, default=0)
     status: Mapped[WithdrawalStatus] = mapped_column(_enum(WithdrawalStatus), default=WithdrawalStatus.pending, index=True)
-    method: Mapped[str] = mapped_column(String(32))
+    method: Mapped[str] = mapped_column(String(32), default="ton")
+    address: Mapped[str | None] = mapped_column(String(80))  # куда отправить USDT (TON, user-friendly)
+    tx_hash: Mapped[str | None] = mapped_column(String(128))  # хэш отправки, если админ его указал
     admin_id: Mapped[int | None] = mapped_column(BigInteger)
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import ExceptionTypeFilter
 from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent, MenuButtonWebApp, WebAppInfo
 
-from app.bot.handlers import admin, payments, user
+from app.bot.handlers import admin, user
 from app.bot.middlewares import DbSessionMiddleware
 from app.config import Settings
 from app.errors import AppError
@@ -19,14 +19,15 @@ log = logging.getLogger(__name__)
 USER_COMMANDS = [
     BotCommand(command="start", description="Открыть казино"),
     BotCommand(command="balance", description="Баланс"),
-    BotCommand(command="deposit", description="Пополнить звёздами"),
-    BotCommand(command="paysupport", description="Помощь по платежам"),
+    BotCommand(command="deposit", description="Пополнить (USDT, TON)"),
+    BotCommand(command="support", description="Поддержка"),
     BotCommand(command="terms", description="Условия"),
 ]
 ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand(command="admin", description="Админка"),
     BotCommand(command="stats", description="Статистика"),
     BotCommand(command="withdrawals", description="Заявки на вывод"),
+    BotCommand(command="deposits", description="Переводы без ID игрока"),
 ]
 
 errors_router = Router(name="errors")
@@ -52,7 +53,7 @@ def create_dispatcher() -> Dispatcher:
     # роутеры модульные и подключаются к диспетчеру один раз — поэтому диспетчер синглтон
     dp = Dispatcher()
     dp.update.outer_middleware(DbSessionMiddleware())
-    dp.include_routers(errors_router, payments.router, admin.router, user.router)
+    dp.include_routers(errors_router, admin.router, user.router)
     return dp
 
 
@@ -64,7 +65,7 @@ async def configure_bot(bot: Bot, settings: Settings) -> None:
             await bot.set_my_commands(ADMIN_COMMANDS, scope=BotCommandScopeChat(chat_id=admin_id))
         if settings.webapp_url.startswith("https://"):
             await bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(text="🎰 Играть", web_app=WebAppInfo(url=settings.webapp_url))
+                menu_button=MenuButtonWebApp(text="💎 ARA Casino", web_app=WebAppInfo(url=settings.webapp_url))
             )
     except Exception:  # noqa: BLE001
         log.warning("Не удалось настроить команды/меню бота", exc_info=True)

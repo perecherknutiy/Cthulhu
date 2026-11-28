@@ -13,7 +13,7 @@ class AppError(Exception):
 
 class InsufficientFunds(AppError):
     def __init__(self) -> None:
-        super().__init__("insufficient_funds", "Недостаточно звёзд на балансе")
+        super().__init__("insufficient_funds", "Недостаточно средств на балансе")
 
 
 class NotFound(AppError):

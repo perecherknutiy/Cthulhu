@@ -1,16 +1,19 @@
-"""Профиль, конфиг, пополнение, история, вывод."""
+"""Профиль, конфиг, пополнение (USDT в сети TON), история, вывод. Все суммы — целые микро-USDT."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from app.api.deps import BotDep, GamesDep, InitDep, SessionDep, SettingsDep, UserDep
-from app.api.schemas import InvoiceIn, InvoiceOut, MeOut, TransactionOut, WithdrawalOut, WithdrawIn
+from app.api.schemas import MeOut, NicknameIn, TransactionOut, WithdrawalOut, WithdrawIn
 from app.bot.notify import notify_admins, withdrawal_keyboard, withdrawal_text
 from app.errors import Forbidden
-from app.models import Transaction, User, Withdrawal
-from app.services import payments, withdrawals
-from app.services.users import REF_PREFIX, parse_ref, upsert_user
+from app.models import Transaction, TxKind, User, Withdrawal
+from app import money
+from app.services import bonus, deposits, withdrawals
+from app.services.leaderboard import leaderboard
+from app.services.users import REF_PREFIX, parse_ref, set_nickname, upsert_user
+from app.vip import VIP_LEVELS, vip_for
 
 router = APIRouter(prefix="/api", tags=["account"])
 
@@ -21,10 +24,14 @@ async def config(settings: SettingsDep, games: GamesDep, bot: BotDep):
     return {
         **games.public_config(),
         "bot_username": me.username,
-        "deposit": {"min": settings.min_deposit, "max": settings.max_deposit, "presets": settings.deposit_presets},
-        "withdraw": {"min": settings.withdraw_min, "max": settings.withdraw_max, "method": settings.payout_method,
-                     "wager_ratio": float(settings.withdraw_wager_ratio)},
+        "currency": {"code": money.CODE, "decimals": money.DECIMALS, "network": "TON"},
+        "deposit": {"enabled": bool(settings.ton_wallet_address), "min": settings.min_deposit,
+                    "presets": settings.deposit_presets},
+        "withdraw": {"min": settings.withdraw_min, "max": settings.withdraw_max, "fee": settings.withdraw_fee,
+                     "method": "ton", "wager_ratio": float(settings.withdraw_wager_ratio)},
         "referral_deposit_percent": float(settings.referral_deposit_percent),
+        "vip_levels": VIP_LEVELS,
+        "daily_bonus": settings.daily_bonus,
     }
 
 
@@ -35,22 +42,49 @@ async def me(init: InitDep, session: SessionDep, settings: SettingsDep, bot: Bot
     await session.commit()
     if user.is_banned:
         raise Forbidden("Аккаунт заблокирован")
+    return await _me_out(session, settings, bot, user)
+
+
+async def _me_out(session, settings, bot, user: User) -> MeOut:
     refs = await session.scalar(select(func.count(User.id)).where(User.referrer_id == user.id))
+    earned = await session.scalar(select(func.coalesce(func.sum(Transaction.amount), 0))
+                                  .where(Transaction.user_id == user.id, Transaction.kind == TxKind.referral))
     bot_me = await bot.me()
     return MeOut(
-        id=user.id, username=user.username, first_name=user.first_name, balance=user.balance,
+        id=user.id, telegram_id=user.id, public_id=user.public_id, nickname=user.nickname, username=user.username,
+        first_name=user.first_name, photo_url=user.photo_url, balance=user.balance,
         total_deposited=user.total_deposited, total_withdrawn=user.total_withdrawn,
-        total_wagered=user.total_wagered, total_won=user.total_won,
-        wager_left=withdrawals.wager_left(settings, user.total_deposited, user.total_wagered),
-        referral_link=f"https://t.me/{bot_me.username}?startapp={REF_PREFIX}{user.id}",
-        referrals=refs or 0,
+        total_wagered=user.total_wagered, total_won=user.total_won, total_bonus=user.total_bonus,
+        wager_left=withdrawals.wager_left(settings, user.total_deposited, user.total_wagered, user.total_bonus),
+        vip=vip_for(user.total_wagered),
+        referral={"link": f"https://t.me/{bot_me.username}?startapp={REF_PREFIX}{user.public_id}",
+                  "invited": refs or 0, "earned": int(earned or 0),
+                  "percent": float(settings.referral_deposit_percent)},
+        bonus=bonus.bonus_info(settings, user), created_at=user.created_at,
     )
 
 
-@router.post("/wallet/invoice", response_model=InvoiceOut)
-async def create_invoice(body: InvoiceIn, user: UserDep, session: SessionDep, bot: BotDep, settings: SettingsDep):
-    invoice, link = await payments.create_invoice(session, bot, settings, user.id, body.amount)
-    return InvoiceOut(invoice_id=invoice.id, invoice_link=link)
+@router.post("/me/nickname", response_model=MeOut)
+async def nickname(body: NicknameIn, user: UserDep, session: SessionDep, settings: SettingsDep, bot: BotDep):
+    fresh = await set_nickname(session, user.id, body.nickname)
+    return await _me_out(session, settings, bot, fresh)
+
+
+@router.post("/bonus/claim")
+async def claim_bonus(user: UserDep, session: SessionDep, settings: SettingsDep):
+    fresh = await bonus.claim(session, settings, user.id)
+    return {"balance": fresh.balance, "amount": settings.daily_bonus, "bonus": bonus.bonus_info(settings, fresh)}
+
+
+@router.get("/leaderboard")
+async def get_leaderboard(user: UserDep, session: SessionDep, period: str = Query("week", pattern="^(week|all)$")):
+    return await leaderboard(session, user.id, days=7 if period == "week" else None)
+
+
+@router.get("/wallet/deposit")
+async def deposit(user: UserDep, settings: SettingsDep):
+    """Куда и с каким комментарием переводить USDT. Зачисление — автоматически, после появления перевода в сети."""
+    return deposits.deposit_info(settings, user)
 
 
 @router.get("/wallet/transactions", response_model=list[TransactionOut])
@@ -65,7 +99,7 @@ async def transactions(user: UserDep, session: SessionDep,
 
 @router.post("/wallet/withdraw", response_model=WithdrawalOut)
 async def withdraw(body: WithdrawIn, user: UserDep, session: SessionDep, bot: BotDep, settings: SettingsDep):
-    w = await withdrawals.request_withdrawal(session, settings, user.id, body.amount)
+    w = await withdrawals.request_withdrawal(session, settings, user.id, body.amount, body.address)
     fresh = await session.get(User, user.id, populate_existing=True)
     await notify_admins(bot, settings, withdrawal_text(w, fresh), withdrawal_keyboard(w))
     return WithdrawalOut.of(w)
